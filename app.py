@@ -6,8 +6,13 @@ Esta app permite al usuario subir una imagen de carátula de álbum y
 encuentra las imágenes más similares en un dataset local usando ResNet50.
 """
 
-import streamlit as st
 import os
+import logging
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
+
+import streamlit as st
 import glob
 import numpy as np
 from PIL import Image  # Usamos PIL para manejar imágenes en Streamlit
@@ -181,7 +186,7 @@ else:
         
         col_izq, col_der = st.columns(2)
         with col_izq:
-            st.image(query_image, caption='Tu imagen de consulta', use_column_width=True)
+            st.image(query_image, caption='Tu imagen de consulta', use_container_width=True)
 
         with col_der:
             # 4. Botón para iniciar la búsqueda
