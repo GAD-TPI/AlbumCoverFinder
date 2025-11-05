@@ -1,0 +1,15 @@
+# Entorno virtual de Python
+.venv/
+venv/
+*.venv
+
+# Carpetas de caché de Python
+__pycache__/
+*.pyc
+
+# Carpetas generadas por tu script
+features/
+results/
+
+# Archivos de configuración de IDE
+.vscode/
