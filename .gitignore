@@ -10,6 +10,7 @@ __pycache__/
 # Carpetas generadas por tu script
 features/
 results/
+data/
 
 # Archivos de configuración de IDE
 .vscode/

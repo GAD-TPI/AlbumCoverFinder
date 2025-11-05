@@ -84,7 +84,7 @@ def cargar_caracteristicas_dataset():
         
         new_features = []
         for i, img_path in enumerate(rutas_a_procesar):
-            features = _extract_features(img_path, feature_extractor)
+            features = _extract_features(img_path, _feature_extractor)
             new_features.append(features)
             nombres_cacheados.append(nombres_a_procesar[i])
             progress_bar.progress((i + 1) / len(rutas_a_procesar), text=f"{progress_text} ({i+1}/{len(rutas_a_procesar)})")
