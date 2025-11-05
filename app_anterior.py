@@ -156,11 +156,10 @@ def buscar_vecino_mas_cercano(features_dataset, features_query, nombres_dataset)
     }
     return resultado
 
-# --- Intde la Aplicación ---
-
 # --- Interfaz Principal de la Aplicación ---
 
 st.set_page_config(page_title="Buscador de Carátulas", layout="wide")
+st.title("Buscador de Carátulas de Álbumes Similares")
 
 # 1. Cargar el modelo (se usará caché si ya está cargado)
 feature_extractor = cargar_modelo()
@@ -169,69 +168,64 @@ feature_extractor = cargar_modelo()
 with st.spinner('Cargando y verificando base de datos de imágenes...'):
     features_dataset, nombres_dataset = cargar_caracteristicas_dataset()
 
-
-# --- BARRA LATERAL (CONTROLES) ---
-st.sidebar.title("🖼️ Buscador de Carátulas")
-st.sidebar.write("Sube una imagen de carátula de álbum para encontrar las más similares en nuestra base de datos.")
-
 if features_dataset is None or not nombres_dataset:
-    st.sidebar.error("No se pudo cargar la base de datos.")
+    st.error("No se pudo cargar la base de datos. Revisa la consola y la carpeta 'data/dataset'.")
 else:
-    st.sidebar.success(f"¡Base de datos lista! Se cargaron {len(nombres_dataset)} imágenes.")
+    st.success(f"¡Base de datos lista! Se cargaron {len(nombres_dataset)} imágenes.")
+    st.markdown("---")
 
-st.sidebar.markdown("---")
+    # 3. Widget para subir la imagen de consulta
+    uploaded_file = st.file_uploader(
+        "Sube una imagen de consulta aquí:",
+        type=["jpg", "jpeg", "png"]
+    )
 
-uploaded_file = st.sidebar.file_uploader(
-    "Sube tu imagen aquí:",
-    type=["jpg", "jpeg", "png"]
-)
-
-
-# --- PÁGINA PRINCIPAL (RESULTADOS) ---
-
-if uploaded_file is None:
-    st.info("Por favor, sube una imagen en la barra lateral para comenzar la búsqueda.")
-
-if uploaded_file is not None:
-    # Mostrar la imagen subida en la barra lateral
-    query_image = Image.open(uploaded_file)
-    st.sidebar.image(query_image, caption='Tu imagen de consulta', use_container_width=True)
-    
-    # Botón de búsqueda en la barra lateral
-    if st.sidebar.button('Buscar imágenes similares', type="primary"):
+    if uploaded_file is not None:
+        # Mostrar la imagen subida
+        query_image = Image.open(uploaded_file)
         
-        # 5. Procesar la búsqueda
-        with st.spinner('Buscando... 🕵️'):
-            uploaded_file.seek(0)
-            features_query = _extract_features(uploaded_file, feature_extractor)
-            
-            resultado = buscar_vecino_mas_cercano(
-                features_dataset, 
-                features_query, 
-                nombres_dataset
-            )
-            
-            # 6. Cargar imágenes de resultados
-            try:
-                euc_path = os.path.join(DATASET_PATH, resultado['vecino_euc'])
-                cos_path = os.path.join(DATASET_PATH, resultado['vecino_cos'])
-                
-                img_euc = Image.open(euc_path)
-                img_cos = Image.open(cos_path)
-                
-                # 7. Mostrar resultados en la página principal
-                st.subheader('Resultados de la Búsqueda')
-                
-                col_res1, col_res2 = st.columns(2)
-                with col_res1:
-                    st.image(img_euc, caption=f"Vecino Euclidiano (Dist: {resultado['dist_euc']:.2f})")
-                    # Usamos st.caption para un look más sutil
-                    st.caption(f"Archivo: {resultado['vecino_euc']}") 
+        col_izq, col_der = st.columns(2)
+        with col_izq:
+            st.image(query_image, caption='Tu imagen de consulta', use_container_width=True)
 
-                with col_res2:
-                    st.image(img_cos, caption=f"Vecino Coseno (Dist: {resultado['dist_cos']:.2f})")
-                    # Usamos st.caption para un look más sutil
-                    st.caption(f"Archivo: {resultado['vecino_cos']}")
+        with col_der:
+            # 4. Botón para iniciar la búsqueda
+            if st.button('Buscar imágenes similares', type="primary"):
+                
+                # 5. Procesar la búsqueda
+                with st.spinner('Buscando... 🕵️'):
+                    
+                    # Extraer características de la imagen subida
+                    # (El file uploader se "rebobina" con seek(0) por si acaso)
+                    uploaded_file.seek(0)
+                    features_query = _extract_features(uploaded_file, feature_extractor)
+                    
+                    # Realizar la búsqueda
+                    resultado = buscar_vecino_mas_cercano(
+                        features_dataset, 
+                        features_query, 
+                        nombres_dataset
+                    )
+                    
+                    # 6. Cargar imágenes de resultados
+                    try:
+                        euc_path = os.path.join(DATASET_PATH, resultado['vecino_euc'])
+                        cos_path = os.path.join(DATASET_PATH, resultado['vecino_cos'])
+                        
+                        img_euc = Image.open(euc_path)
+                        img_cos = Image.open(cos_path)
+                        
+                        # 7. Mostrar resultados
+                        st.subheader('Resultados de la Búsqueda')
+                        
+                        col_res1, col_res2 = st.columns(2)
+                        with col_res1:
+                            st.image(img_euc, caption=f"Vecino Euclidiano (Dist: {resultado['dist_euc']:.2f})")
+                            st.write(f"Archivo: `{resultado['vecino_euc']}`")
 
-            except FileNotFoundError as e:
-                st.error(f"Error: No se pudo encontrar el archivo de imagen resultado: {e}")
+                        with col_res2:
+                            st.image(img_cos, caption=f"Vecino Coseno (Dist: {resultado['dist_cos']:.2f})")
+                            st.write(f"Archivo: `{resultado['vecino_cos']}`")
+
+                    except FileNotFoundError as e:
+                        st.error(f"Error: No se pudo encontrar el archivo de imagen resultado: {e}")
