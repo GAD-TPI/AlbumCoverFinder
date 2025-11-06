@@ -45,13 +45,15 @@ def cargar_modelo():
 
 def cargar_imagenes_dataset(carpeta):
     rutas = []
+    # <--- MODIFICADO: Busca también en subcarpetas (recursive=True) ---
     for ext in ('*.jpg', '*.jpeg', '*.png', '*.bmp'):
-        rutas.extend(glob.glob(os.path.join(carpeta, ext)))
+        rutas.extend(glob.glob(os.path.join(carpeta, '**', ext), recursive=True))
     nombres = [os.path.basename(r) for r in rutas]
     return rutas, nombres
 
+# <--- MODIFICADO: La función ahora acepta el modelo como argumento ---
 @st.cache_data
-def cargar_caracteristicas_dataset():
+def cargar_caracteristicas_dataset(_model): # _model es el feature_extractor
     os.makedirs(FEATURES_DIR, exist_ok=True)
     rutas_dataset, nombres_actuales = cargar_imagenes_dataset(DATASET_PATH)
     if not rutas_dataset:
@@ -77,26 +79,94 @@ def cargar_caracteristicas_dataset():
             rutas_a_procesar.append(img_path)
             nombres_a_procesar.append(img_name)
 
+    # <--- INICIO: BLOQUE DE PROCESAMIENTO POR LOTES (COMO COLAB) ---
     if rutas_a_procesar:
         print(f"Procesando {len(rutas_a_procesar)} imágenes nuevas...")
-        progress_text = f"Actualizando base de datos. Procesando {len(rutas_a_procesar)} imágenes nuevas..."
-        progress_bar = st.progress(0, text=progress_text)
         
-        new_features = []
-        for i, img_path in enumerate(rutas_a_procesar):
-            features = _extract_features(img_path, feature_extractor)
-            new_features.append(features)
-            nombres_cacheados.append(nombres_a_procesar[i])
-            progress_bar.progress((i + 1) / len(rutas_a_procesar), text=f"{progress_text} ({i+1}/{len(rutas_a_procesar)})")
+        # --- CONFIGURACIÓN DE PROCESAMIENTO ---
+        # BATCH_SIZE más bajo para CPU local
+        BATCH_SIZE = 32 
+        CHECKPOINT_EVERY_N_BATCHES = 5 # Guardar cada 5 lotes
+        # ------------------------------------
+
+        total_lotes = (len(rutas_a_procesar) + BATCH_SIZE - 1) // BATCH_SIZE
+        progress_text_template = "Actualizando base de datos. Lote {current_batch}/{total_batches}..."
+        progress_bar = st.progress(0, text=progress_text_template.format(current_batch=0, total_batches=total_lotes))
+
+        temp_features_list = []
+        temp_names_list = []
+
+        for i in range(0, len(rutas_a_procesar), BATCH_SIZE):
+            batch_num_actual = (i // BATCH_SIZE) + 1
+            
+            # Actualizar barra de progreso de Streamlit
+            progress_percentage = batch_num_actual / total_lotes
+            progress_text = progress_text_template.format(current_batch=batch_num_actual, total_batches=total_lotes)
+            progress_bar.progress(progress_percentage, text=progress_text)
+
+            # Preparar el lote
+            batch_paths = rutas_a_procesar[i : i + BATCH_SIZE]
+            batch_names = nombres_a_procesar[i : i + BATCH_SIZE]
+            batch_images_arrays = []
+            valid_batch_names = []
+
+            for j, img_path in enumerate(batch_paths):
+                try:
+                    img = image.load_img(img_path, target_size=(224, 224))
+                    img_array = image.img_to_array(img)
+                    batch_images_arrays.append(img_array)
+                    valid_batch_names.append(batch_names[j])
+                except Exception as e:
+                    print(f"\nError al cargar {img_path}: {e}. Omitiendo.")
+            
+            if not batch_images_arrays:
+                print(f"Lote {batch_num_actual} vacío, saltando.")
+                continue
+            
+            batch_array = np.array(batch_images_arrays)
+            batch_preprocessed = preprocess_input(batch_array)
+            
+            # Usar el modelo pasado como argumento
+            batch_features = _model.predict(batch_preprocessed, verbose=0)
+            
+            # Guardar resultados temporales en memoria
+            temp_features_list.append(batch_features)
+            temp_names_list.extend(valid_batch_names)
+
+            # --- Lógica de Checkpoint ---
+            if batch_num_actual % CHECKPOINT_EVERY_N_BATCHES == 0:
+                print(f"Guardando checkpoint (Lote {batch_num_actual})...")
+                
+                # Unir los features y nombres temporales a los principales
+                features_dataset = np.vstack([features_dataset] + temp_features_list)
+                nombres_cacheados.extend(temp_names_list)
+                
+                # Guardar en disco
+                try:
+                    np.save(FEATURES_FILE, features_dataset)
+                    np.save(NAMES_FILE, nombres_cacheados)
+                    # Limpiar las listas temporales
+                    temp_features_list = []
+                    temp_names_list = []
+                    print("Checkpoint guardado.")
+                except Exception as e:
+                    print(f"Error al guardar checkpoint: {e}")
         
+        # --- Guardado Final ---
+        if temp_features_list:
+            print("Guardando últimos lotes restantes...")
+            features_dataset = np.vstack([features_dataset] + temp_features_list)
+            nombres_cacheados.extend(temp_names_list)
+            try:
+                np.save(FEATURES_FILE, features_dataset)
+                np.save(NAMES_FILE, nombres_cacheados)
+                print("Guardado final completado.")
+            except Exception as e:
+                print(f"Error en guardado final: {e}")
+
         progress_bar.empty()
-        features_dataset = np.vstack([features_dataset] + new_features)
-        try:
-            np.save(FEATURES_FILE, features_dataset)
-            np.save(NAMES_FILE, nombres_cacheados)
-            print("Caché actualizado y guardado.")
-        except Exception as e:
-            st.error(f"Error al guardar archivos de caché: {e}")
+        print("Caché actualizado y guardado.")
+    # <--- FIN: BLOQUE DE PROCESAMIENTO POR LOTES ---
     else:
         print("La base de datos está al día.")
 
@@ -122,52 +192,28 @@ def buscar_vecinos(features_dataset, features_query, nombres_dataset,
     Busca los k-vecinos más cercanos que estén dentro de un radio.
     """
     
-    # Calcular TODAS las distancias
     dist_euc_all = euclidean_distances([features_query], features_dataset)[0]
     dist_cos_all = cosine_distances([features_query], features_dataset)[0]
-
-    # Obtener los índices ordenados por distancia
     idx_euc_sorted = np.argsort(dist_euc_all)
     idx_cos_sorted = np.argsort(dist_cos_all)
 
-    # --- Filtrar por Euclidiana ---
     resultados_euc = []
-    # Ignoramos el primer resultado (dist=0) si es una búsqueda interna
     start_index = 1 if ignorar_self else 0 
     
     for i in range(start_index, len(idx_euc_sorted)):
         idx = idx_euc_sorted[i]
         dist = dist_euc_all[idx]
-        
-        # Si la distancia es mayor al radio, paramos (ya que están ordenados)
-        if dist > radio_euc:
-            break
-        
-        resultados_euc.append({
-            'nombre': nombres_dataset[idx],
-            'dist': dist
-        })
-        
-        # Si ya tenemos k resultados, paramos
-        if len(resultados_euc) >= top_k:
-            break
+        if dist > radio_euc: break
+        resultados_euc.append({'nombre': nombres_dataset[idx], 'dist': dist})
+        if len(resultados_euc) >= top_k: break
 
-    # --- Filtrar por Coseno ---
     resultados_cos = []
     for i in range(start_index, len(idx_cos_sorted)):
         idx = idx_cos_sorted[i]
         dist = dist_cos_all[idx]
-        
-        if dist > radio_cos:
-            break
-            
-        resultados_cos.append({
-            'nombre': nombres_dataset[idx],
-            'dist': dist
-        })
-        
-        if len(resultados_cos) >= top_k:
-            break
+        if dist > radio_cos: break
+        resultados_cos.append({'nombre': nombres_dataset[idx], 'dist': dist})
+        if len(resultados_cos) >= top_k: break
 
     return {'euc': resultados_euc, 'cos': resultados_cos}
 # <--- FIN: FUNCIÓN DE BÚSQUEDA MODIFICADA ---
@@ -183,7 +229,8 @@ feature_extractor = cargar_modelo()
 
 # 2. Cargar/Actualizar el dataset
 with st.spinner('Cargando y verificando base de datos de imágenes...'):
-    features_dataset, nombres_dataset = cargar_caracteristicas_dataset()
+    # <--- MODIFICADO: Pasamos el modelo a la función ---
+    features_dataset, nombres_dataset = cargar_caracteristicas_dataset(feature_extractor)
 
 if features_dataset is None or not nombres_dataset:
     st.error("No se pudo cargar la base de datos. Revisa la consola y la carpeta 'data/dataset'.")
@@ -194,14 +241,11 @@ else:
     # <--- INICIO: UI MODIFICADA CON TABS ---
 
     # --- CONTROLES DE BÚSQUEDA ---
-    # Dividimos la UI para los controles de radio
     st.subheader("Parámetros de Búsqueda (Top 10)")
     col_radio1, col_radio2 = st.columns(2)
     with col_radio1:
-        # La distancia Euclidiana puede ser alta (ej. 10-50)
         radio_euc = st.number_input("Radio de Búsqueda (Euclidiana):", min_value=0.0, value=20.0, step=0.5)
     with col_radio2:
-        # La distancia Coseno está entre 0 y 2 (ej. 0.0 - 0.5)
         radio_cos = st.number_input("Radio de Búsqueda (Coseno):", min_value=0.0, max_value=2.0, value=0.4, step=0.01)
 
     # --- TABS PARA MÉTODOS DE BÚSQUEDA ---
@@ -222,41 +266,40 @@ else:
             query_image = Image.open(uploaded_file)
             st.image(query_image, caption='Tu imagen de consulta', width=250)
             
-            # Extraer features al subir
             uploaded_file.seek(0)
-            query_features = _extract_features(uploaded_file, feature_extractor)
+            # <--- MODIFICADO: Usamos el modelo global aquí ---
+            query_features = _extract_features(uploaded_file, feature_extractor) 
             ignorar_self = False
 
     # --- Tab 2: Seleccionar del Dataset ---
     with tab2:
-        # Usamos un selectbox para elegir la imagen del dataset
         nombre_seleccionado = st.selectbox(
             "Selecciona una imagen del dataset:",
             options=nombres_dataset,
-            index=None, # Para que no haya nada seleccionado por defecto
+            index=None,
             placeholder="Escribe para buscar..."
         )
         
         if nombre_seleccionado:
-            # Obtener el índice y las features de la imagen seleccionada
             idx_query = nombres_dataset.index(nombre_seleccionado)
             query_features = features_dataset[idx_query]
-            ignorar_self = True # Ignorar el resultado 0.0
+            ignorar_self = True
             
-            # Mostrar la imagen seleccionada
             query_image_path = os.path.join(DATASET_PATH, nombre_seleccionado)
-            query_image = Image.open(query_image_path)
-            st.image(query_image, caption=f'Consulta: {nombre_seleccionado}', width=250)
+            try:
+                query_image = Image.open(query_image_path)
+                st.image(query_image, caption=f'Consulta: {nombre_seleccionado}', width=250)
+            except FileNotFoundError:
+                st.error(f"No se pudo cargar la imagen de preview: {nombre_seleccionado}")
+                query_features = None # Evitar que se pueda buscar
 
     # --- LÓGICA DE BÚSQUEDA Y RESULTADOS (COMÚN A AMBOS TABS) ---
     
-    # Si tenemos features (de carga o selección) y se presiona el botón
     if query_features is not None:
         
         if st.button('Buscar imágenes similares', type="primary"):
             
             with st.spinner('Buscando... 🕵️'):
-                # Usamos la NUEVA función de búsqueda
                 resultado = buscar_vecinos(
                     features_dataset, 
                     query_features, 
@@ -278,7 +321,6 @@ else:
                     if not resultado['euc']:
                         st.info("No se encontraron resultados en este radio.")
                     
-                    # Mostramos los resultados en un loop
                     for res in resultado['euc']:
                         try:
                             img_path = os.path.join(DATASET_PATH, res['nombre'])
