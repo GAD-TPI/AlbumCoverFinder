@@ -5,6 +5,10 @@ Aplicación Streamlit para la Búsqueda de Imágenes Similares (CBIR).
 
 import os
 import logging
+import datetime
+import pandas as pd # Necesario para guardar los datos en CSV
+from PIL import Image, ImageDraw, ImageFont # Necesario para generar la imagen consolidada
+
 # Desactivar mensajes de optimización y logging de TensorFlow
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
@@ -13,7 +17,6 @@ logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import streamlit as st
 import glob
 import numpy as np
-from PIL import Image
 from tensorflow import keras
 from keras._tf_keras.keras.preprocessing import image
 from keras.applications.resnet50 import ResNet50, preprocess_input
@@ -24,13 +27,14 @@ from sklearn.metrics.pairwise import cosine_distances, euclidean_distances
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 FEATURES_DIR = os.path.join(BASE_DIR, 'features')
+RESULTS_DIR = os.path.join(BASE_DIR, 'results') # RUTA DE RESULTADOS AÑADIDA
 DATASET_PATH = os.path.join(DATA_DIR, 'dataset') 
 FEATURES_FILE = os.path.join(FEATURES_DIR, 'dataset_features.npy')
 NAMES_FILE = os.path.join(FEATURES_DIR, 'dataset_names.npy') 
 
 # --- Funciones de Carga y Lógica (Sin Cambios Relevantes) ---
-# NOTE: Mantengo las funciones de carga compactas ya que no fueron modificadas
-# en su lógica central desde la última revisión.
+# ... (Funciones cargar_modelo, cargar_imagenes_dataset, cargar_caracteristicas_dataset, prepare_image, _extract_features, buscar_vecinos se mantienen igual)
+# NOTA: Por brevedad, el cuerpo de las funciones se omite aquí, pero se mantiene en el código final.
 
 @st.cache_resource
 def cargar_modelo():
@@ -80,14 +84,14 @@ def cargar_caracteristicas_dataset(_model):
         BATCH_SIZE = 32 
         total_lotes = (len(rutas_a_procesar) + BATCH_SIZE - 1) // BATCH_SIZE
         progress_text_template = "Actualizando base de datos. Lote {current_batch}/{total_batches}..."
-        progress_bar = st.progress(0, text=progress_text_template.format(current_batch=0, total_batches=total_lotes))
+        progress_bar = st.progress(0, text=progress_text_template.format(current_batch=0, total_lotes=total_lotes))
 
         temp_features_list = []
         temp_names_list = []
 
         for i in range(0, len(rutas_a_procesar), BATCH_SIZE):
             batch_num_actual = (i // BATCH_SIZE) + 1
-            progress_bar.progress(batch_num_actual / total_lotes, text=progress_text_template.format(current_batch=batch_num_actual, total_batches=total_lotes))
+            progress_bar.progress(batch_num_actual / total_lotes, text=progress_text_template.format(current_batch=batch_num_actual, total_lotes=total_lotes))
 
             batch_paths = rutas_a_procesar[i : i + BATCH_SIZE]
             batch_names = nombres_a_procesar[i : i + BATCH_SIZE]
@@ -162,8 +166,134 @@ def buscar_vecinos(features_dataset, features_query, nombres_dataset,
 
     return {'euc': resultados_euc, 'cos': resultados_cos}
 
+# --- NUEVA FUNCIÓN DE PERSISTENCIA ---
+def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder_name):
+    """ Guarda la imagen de consulta y los resultados de búsqueda en la carpeta /results. """
+    
+    # 1. Crear carpeta de resultados
+    query_dir = os.path.join(RESULTS_DIR, subfolder_name)
+    os.makedirs(query_dir, exist_ok=True)
+    
+    # 2. Guardar la imagen de consulta (asumiendo que query_image es un objeto PIL)
+    query_image.save(os.path.join(query_dir, f"consulta_{query_name}.jpg"))
+    
+    # 3. Función para procesar y guardar los resultados de cada métrica
+    def procesar_metrica(metric_key, metric_results):
+        
+        # a) Crear DataFrame y CSV
+        data = []
+        for i, res in enumerate(metric_results):
+            data.append({
+                'Puesto': i + 1,
+                'Distancia': res['dist'],
+                'Nombre_Archivo': res['nombre']
+            })
+        df = pd.DataFrame(data)
+        csv_file = os.path.join(query_dir, f"resultados_{metric_key}.csv")
+        df.to_csv(csv_file, index=False)
+        
+        # b) Generar Imagen Consolidada (solo si hay resultados)
+        if metric_results:
+            IMG_SIZE = 150 # Tamaño de la imagen de resultado en la grilla
+            IMG_SPACING = 5 # Espacio entre imágenes
+            INFO_HEIGHT = 40 # Altura para texto de info/puesto
+            
+            # Dimensiones de la imagen de consulta y de los resultados (max 10)
+            rows = 3
+            cols = 4 # 1 consulta + 3 resultados por fila, luego 4
+            
+            # Calculo de ancho (Consulta + 10 resultados, 4 por fila)
+            # Fila 1: Consulta + 3 resultados (4 * IMG_SIZE)
+            # Fila 2/3: 4 resultados (4 * IMG_SIZE)
+            
+            # Calculo simple: 4 imágenes de ancho por 3 de alto (Consulta + 10)
+            
+            ancho_final = 4 * IMG_SIZE + (cols + 1) * IMG_SPACING
+            alto_final = rows * IMG_SIZE + rows * INFO_HEIGHT + (rows + 1) * IMG_SPACING
+            
+            # Crear la imagen en blanco (Fondo Blanco)
+            img_compuesta = Image.new('RGB', (ancho_final, alto_final), color='white')
+            draw = ImageDraw.Draw(img_compuesta)
+            try:
+                font = ImageFont.truetype("arial.ttf", 16)
+            except IOError:
+                font = ImageFont.load_default() # Fallback si no encuentra arial
+            
+            
+            # --- Dibujar la Imagen de Consulta (Posición 0) ---
+            q_img_resized = query_image.resize((IMG_SIZE, IMG_SIZE))
+            img_compuesta.paste(q_img_resized, (IMG_SPACING, IMG_SPACING))
+            draw.text((IMG_SPACING, IMG_SIZE + IMG_SPACING), f"CONSULTA: {query_name}", fill='black', font=font)
+            
+            # --- Dibujar Resultados (Posiciones 1 a 10) ---
+            for i, res in enumerate(metric_results):
+                puesto = i + 1
+                
+                # Posición lógica en la grilla (0-10, 4 por fila)
+                idx_total = i + 1 
+                
+                # Calcular la fila y columna (1ra fila tiene 4 elementos: consulta y 3 resultados)
+                # i=0 (Puesto 1) -> idx_total=1 -> Fila 0, Columna 1
+                # i=3 (Puesto 4) -> idx_total=4 -> Fila 1, Columna 0
+                
+                # Usaremos 4 columnas: Posiciones 0-3 (Fila 0), 4-7 (Fila 1), 8-11 (Fila 2)
+                row_idx = idx_total // cols
+                col_idx = idx_total % cols
 
-# --- Interfaz Principal de la Aplicación (MODIFICADA: Diseño Vertical con Expander) ---
+                # Si estamos en la primera fila (row_idx=0), la consulta ocupa el col=0
+                # Si queremos mantener la consulta en (0,0), los resultados inician en (0,1)
+                
+                # Simplificamos: Mostramos 11 elementos (Consulta + 10 resultados) en una grilla de 4x3 (12 slots)
+                
+                
+                
+                # --- Usando una grilla lineal de 4 ---
+                row_idx = (i + 1) // 4
+                col_idx = (i + 1) % 4
+                
+                # Si el puesto es 1 (i=0), debe ir a la fila 0, col 1
+                if i < 3: # Primera Fila (Puestos 1, 2, 3)
+                    row_idx = 0
+                    col_idx = i + 1
+                elif i < 7: # Segunda Fila (Puestos 4, 5, 6, 7)
+                    row_idx = 1
+                    col_idx = i - 3
+                else: # Tercera Fila (Puestos 8, 9, 10)
+                    row_idx = 2
+                    col_idx = i - 7
+                
+                
+                x_start = col_idx * IMG_SIZE + (col_idx + 1) * IMG_SPACING
+                y_start = row_idx * (IMG_SIZE + INFO_HEIGHT) + IMG_SPACING
+                
+                try:
+                    res_img_path = os.path.join(DATASET_PATH, res['nombre'])
+                    res_img = Image.open(res_img_path).resize((IMG_SIZE, IMG_SIZE))
+                    img_compuesta.paste(res_img, (x_start, y_start))
+                    
+                    # Dibujar información
+                    text_line_1 = f"#{puesto} ({res['nombre']})"
+                    text_line_2 = f"Dist: {res['dist']:.2f}"
+                    
+                    draw.text((x_start, y_start + IMG_SIZE), text_line_1, fill='black', font=font)
+                    draw.text((x_start, y_start + IMG_SIZE + 18), text_line_2, fill='black', font=font)
+                    
+                except FileNotFoundError:
+                    # Dibujar un cuadro gris si el archivo no existe
+                    draw.rectangle([x_start, y_start, x_start + IMG_SIZE, y_start + IMG_SIZE], fill="gray")
+                    draw.text((x_start, y_start + IMG_SIZE), f"NO ENCONTRADO", fill='black', font=font)
+            
+            img_compuesta.save(os.path.join(query_dir, f"imagen_consolidada_{metric_key}.jpg"))
+            
+    # Ejecutar para Euclidiana
+    procesar_metrica('euclidiana', resultados['euc'])
+    
+    # Ejecutar para Coseno
+    procesar_metrica('coseno', resultados['cos'])
+    
+    return query_dir
+
+# --- Interfaz Principal de la Aplicación (MODIFICADA) ---
 
 st.set_page_config(page_title="Buscador de Carátulas", layout="wide")
 st.title("🖼️ Buscador de Carátulas de Álbumes Similares")
@@ -192,7 +322,8 @@ else:
 
     query_features = None
     ignorar_self = False
-    query_image_path = None # Variable para guardar la ruta de la imagen de consulta
+    query_image = None
+    query_name = ""
 
     # --- Tab 1: Cargar Imagen ---
     with tab1:
@@ -202,7 +333,9 @@ else:
         )
         
         if uploaded_file is not None:
+            # Almacenar el objeto PIL y el nombre
             query_image = Image.open(uploaded_file)
+            query_name = uploaded_file.name
             st.image(query_image, caption='Tu imagen de consulta', width=250)
             uploaded_file.seek(0)
             query_features = _extract_features(uploaded_file, feature_extractor) 
@@ -224,13 +357,15 @@ else:
             
             query_image_path = os.path.join(DATASET_PATH, nombre_seleccionado)
             try:
+                # Almacenar el objeto PIL y el nombre
                 query_image = Image.open(query_image_path)
+                query_name = nombre_seleccionado
                 st.image(query_image, caption=f'Consulta: {nombre_seleccionado}', width=250)
             except FileNotFoundError:
                 st.error(f"No se pudo cargar la imagen de preview: {nombre_seleccionado}. Revisa la estructura de carpetas.")
                 query_features = None 
 
-    # --- LÓGICA DE BÚSQUEDA Y RESULTADOS (Diseño Vertical con Expander) ---
+    # --- LÓGICA DE BÚSQUEDA Y RESULTADOS ---
     
     if query_features is not None:
         
@@ -247,20 +382,26 @@ else:
                     ignorar_self=ignorar_self
                 )
                 
+                # --- Lógica de Persistencia ---
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                subfolder_name = f"consulta_{query_name.split('.')[0]}_{timestamp}"
+                
+                query_dir = guardar_consulta_y_resultados(query_image, query_name, resultado, subfolder_name)
+                
+                st.success(f"Resultados guardados en: {query_dir}")
+                # -----------------------------
+                
                 st.markdown("---")
                 st.subheader('Resultados de la Búsqueda')
                 
                 # --- Función Auxiliar para Renderizar Resultados ---
                 def render_results(metric_name, results, radio):
-                    title = f"Vecinos ({metric_name}) - Radio ≤ {radio}"
-                    # Usamos st.expander()
                     with st.expander(f"⬇️ **{metric_name}** | {len(results)} resultados encontrados (Radio ≤ {radio})", expanded=True):
                         
                         if not results:
                             st.info("No se encontraron resultados en este radio.")
                             return
                         
-                        # Usamos una grilla más ancha (4 columnas) para mejor visualización
                         cols = st.columns(4) 
                         
                         for i, res in enumerate(results):
@@ -269,14 +410,10 @@ else:
                                 img = Image.open(img_path) 
                                 
                                 puesto = i + 1
-                                # Simplificamos el caption a solo Puesto y Distancia
                                 caption_text = f"**#{puesto}** (Dist: {res['dist']:.2f})"
                                 
-                                # Usar el índice del resultado (i) para rotar entre las 4 columnas
                                 with cols[i % 4]:
-                                    # Incrementamos un poco el tamaño para las 4 columnas (antes era 120 para 5)
                                     st.image(img, caption=caption_text, width=150) 
-                                    # Mostramos el nombre de archivo sin el 'help' para limpiar la UI
                                     st.caption(res['nombre']) 
 
                             except FileNotFoundError:
