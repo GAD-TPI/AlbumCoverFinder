@@ -141,155 +141,218 @@ def buscar_vecinos(features_dataset, features_query, nombres_dataset,
                          radio_euc, radio_cos, top_k=10, ignorar_self=False):
     """ Busca los k-vecinos más cercanos que estén dentro de un radio. """
     
+    # Calcular todas las distancias
     dist_euc_all = euclidean_distances([features_query], features_dataset)[0]
     dist_cos_all = cosine_distances([features_query], features_dataset)[0]
-    idx_euc_sorted = np.argsort(dist_euc_all)
-    idx_cos_sorted = np.argsort(dist_cos_all)
-
-    resultados_euc = []
-    start_index = 1 if ignorar_self else 0 
     
-    for i in range(start_index, len(idx_euc_sorted)):
-        idx = idx_euc_sorted[i]
-        dist = dist_euc_all[idx]
-        if dist > radio_euc: break
-        resultados_euc.append({'nombre': nombres_dataset[idx], 'dist': dist})
-        if len(resultados_euc) >= top_k: break
+    nombres_dataset = np.array(nombres_dataset)
+    
+    # --- Lógica de exclusión de la propia imagen (solo si ignorar_self es True) ---
+    if ignorar_self:
+        # Encontramos la distancia CERO (o muy cercana a cero)
+        # Esto debería corresponder a la propia imagen consultada
+        
+        # Filtro de índice: excluimos el que tenga la distancia más pequeña
+        # Usamos < 1e-6 para ser robustos contra errores de punto flotante.
+        idx_self_euc = np.argmin(dist_euc_all)
+        idx_self_cos = np.argmin(dist_cos_all)
 
+        # Si el mínimo es casi cero, lo ignoramos.
+        if dist_euc_all[idx_self_euc] < 1e-6:
+            # Creamos una máscara que excluye el índice del self-match
+            mask_euc = np.arange(len(features_dataset)) != idx_self_euc
+            dist_euc_filtered = dist_euc_all[mask_euc]
+            nombres_euc_filtered = nombres_dataset[mask_euc]
+        else:
+            dist_euc_filtered = dist_euc_all
+            nombres_euc_filtered = nombres_dataset
+            
+        if dist_cos_all[idx_self_cos] < 1e-6:
+            mask_cos = np.arange(len(features_dataset)) != idx_self_cos
+            dist_cos_filtered = dist_cos_all[mask_cos]
+            nombres_cos_filtered = nombres_dataset[mask_cos]
+        else:
+            dist_cos_filtered = dist_cos_all
+            nombres_cos_filtered = nombres_dataset
+    else:
+        # Si no se debe ignorar, usamos todos los resultados
+        dist_euc_filtered = dist_euc_all
+        nombres_euc_filtered = nombres_dataset
+        dist_cos_filtered = dist_cos_all
+        nombres_cos_filtered = nombres_dataset
+
+
+    # --- Procesar Resultados (Euclidiana) ---
+    idx_euc_sorted = np.argsort(dist_euc_filtered)
+    resultados_euc = []
+    
+    for i in range(len(idx_euc_sorted)):
+        idx = idx_euc_sorted[i]
+        dist = dist_euc_filtered[idx]
+        
+        if dist > radio_euc: 
+            break
+            
+        resultados_euc.append({'nombre': nombres_euc_filtered[idx], 'dist': dist})
+        
+        if len(resultados_euc) >= top_k: 
+            break
+
+    # --- Procesar Resultados (Coseno) ---
+    idx_cos_sorted = np.argsort(dist_cos_filtered)
     resultados_cos = []
-    for i in range(start_index, len(idx_cos_sorted)):
+    
+    for i in range(len(idx_cos_sorted)):
         idx = idx_cos_sorted[i]
-        dist = dist_cos_all[idx]
-        if dist > radio_cos: break
-        resultados_cos.append({'nombre': nombres_dataset[idx], 'dist': dist})
-        if len(resultados_cos) >= top_k: break
+        dist = dist_cos_filtered[idx]
+        
+        if dist > radio_cos: 
+            break
+            
+        resultados_cos.append({'nombre': nombres_cos_filtered[idx], 'dist': dist})
+        
+        if len(resultados_cos) >= top_k: 
+            break
 
     return {'euc': resultados_euc, 'cos': resultados_cos}
 
 # --- NUEVA FUNCIÓN DE PERSISTENCIA ---
+# --- FUNCIÓN DE PERSISTENCIA MODIFICADA ---
 def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder_name):
-    """ Guarda la imagen de consulta y los resultados de búsqueda en la carpeta /results. """
+    """ Guarda la imagen de consulta, los resultados en un CSV unificado, y las imágenes consolidadas. """
     
     # 1. Crear carpeta de resultados
     query_dir = os.path.join(RESULTS_DIR, subfolder_name)
     os.makedirs(query_dir, exist_ok=True)
     
-    # 2. Guardar la imagen de consulta (asumiendo que query_image es un objeto PIL)
+    # 2. Guardar la imagen de consulta
     query_image.save(os.path.join(query_dir, f"consulta_{query_name}.jpg"))
     
-    # 3. Función para procesar y guardar los resultados de cada métrica
-    def procesar_metrica(metric_key, metric_results):
+    # 3. Generar CSV Unificado con Columna 'Unanime'
+    
+    # Nos aseguramos de que ambas listas tengan la misma longitud para unirlas (max 10)
+    max_len = max(len(resultados['euc']), len(resultados['cos']))
+    
+    data = []
+    for i in range(max_len):
+        row = {'Puesto': i + 1}
         
-        # a) Crear DataFrame y CSV
-        data = []
-        for i, res in enumerate(metric_results):
-            data.append({
-                'Puesto': i + 1,
-                'Distancia': res['dist'],
-                'Nombre_Archivo': res['nombre']
-            })
-        df = pd.DataFrame(data)
-        csv_file = os.path.join(query_dir, f"resultados_{metric_key}.csv")
-        df.to_csv(csv_file, index=False)
+        nombre_euc = 'N/A'
+        nombre_cos = 'N/A'
         
-        # b) Generar Imagen Consolidada (solo si hay resultados)
-        if metric_results:
-            IMG_SIZE = 150 # Tamaño de la imagen de resultado en la grilla
-            IMG_SPACING = 5 # Espacio entre imágenes
-            INFO_HEIGHT = 40 # Altura para texto de info/puesto
+        # Resultados Euclidiana
+        if i < len(resultados['euc']):
+            nombre_euc = resultados['euc'][i]['nombre']
+            row['Nombre_Archivo_Euc'] = nombre_euc
+            row['Distancia_Euc'] = resultados['euc'][i]['dist']
+        else:
+            row['Nombre_Archivo_Euc'] = 'N/A'
+            row['Distancia_Euc'] = 'N/A'
             
-            # Dimensiones de la imagen de consulta y de los resultados (max 10)
-            rows = 3
-            cols = 4 # 1 consulta + 3 resultados por fila, luego 4
+        # Resultados Coseno
+        if i < len(resultados['cos']):
+            nombre_cos = resultados['cos'][i]['nombre']
+            row['Nombre_Archivo_Cos'] = nombre_cos
+            row['Distancia_Cos'] = resultados['cos'][i]['dist']
+        else:
+            row['Nombre_Archivo_Cos'] = 'N/A'
+            row['Distancia_Cos'] = 'N/A'
+        
+        # --- NUEVA COLUMNA: UNANIME ---
+        # Es 1 si el nombre del archivo de Euc y Cos coinciden en este puesto, 0 si no
+        # Se asume que no hay unanimidad si alguno de los resultados es 'N/A'
+        if nombre_euc != 'N/A' and nombre_cos != 'N/A':
+            row['Unanime'] = 1 if nombre_euc == nombre_cos else 0
+        else:
+            row['Unanime'] = 0 # No hay acuerdo si falta un resultado
             
-            # Calculo de ancho (Consulta + 10 resultados, 4 por fila)
-            # Fila 1: Consulta + 3 resultados (4 * IMG_SIZE)
-            # Fila 2/3: 4 resultados (4 * IMG_SIZE)
+        data.append(row)
+        
+    df = pd.DataFrame(data)
+    
+    # 3.1 Guardar el CSV Unificado
+    csv_file = os.path.join(query_dir, f"resultados_unificados.csv")
+    df.to_csv(csv_file, index=False)
+    
+    # 4. Generar Imágenes Consolidadas con Título (sin cambios)
+    
+    def generar_imagen_consolidada(metric_key, metric_results, metric_name):
+        if not metric_results: return
+        
+        IMG_SIZE = 150
+        IMG_SPACING = 5
+        INFO_HEIGHT = 40
+        TITLE_HEIGHT = 60 
+        
+        rows = 3
+        cols = 4
+        
+        ancho_final = 4 * IMG_SIZE + (cols + 1) * IMG_SPACING
+        alto_final = TITLE_HEIGHT + rows * IMG_SIZE + rows * INFO_HEIGHT + (rows + 1) * IMG_SPACING
+        
+        img_compuesta = Image.new('RGB', (ancho_final, alto_final), color='white')
+        draw = ImageDraw.Draw(img_compuesta)
+        
+        try:
+            font_title = ImageFont.truetype("arial.ttf", 20)
+            font_info = ImageFont.truetype("arial.ttf", 16)
+        except IOError:
+            font_title = ImageFont.load_default()
+            font_info = ImageFont.load_default()
             
-            # Calculo simple: 4 imágenes de ancho por 3 de alto (Consulta + 10)
-            
-            ancho_final = 4 * IMG_SIZE + (cols + 1) * IMG_SPACING
-            alto_final = rows * IMG_SIZE + rows * INFO_HEIGHT + (rows + 1) * IMG_SPACING
-            
-            # Crear la imagen en blanco (Fondo Blanco)
-            img_compuesta = Image.new('RGB', (ancho_final, alto_final), color='white')
-            draw = ImageDraw.Draw(img_compuesta)
-            try:
-                font = ImageFont.truetype("arial.ttf", 16)
-            except IOError:
-                font = ImageFont.load_default() # Fallback si no encuentra arial
-            
-            
-            # --- Dibujar la Imagen de Consulta (Posición 0) ---
-            q_img_resized = query_image.resize((IMG_SIZE, IMG_SIZE))
-            img_compuesta.paste(q_img_resized, (IMG_SPACING, IMG_SPACING))
-            draw.text((IMG_SPACING, IMG_SIZE + IMG_SPACING), f"CONSULTA: {query_name}", fill='black', font=font)
-            
-            # --- Dibujar Resultados (Posiciones 1 a 10) ---
-            for i, res in enumerate(metric_results):
-                puesto = i + 1
-                
-                # Posición lógica en la grilla (0-10, 4 por fila)
-                idx_total = i + 1 
-                
-                # Calcular la fila y columna (1ra fila tiene 4 elementos: consulta y 3 resultados)
-                # i=0 (Puesto 1) -> idx_total=1 -> Fila 0, Columna 1
-                # i=3 (Puesto 4) -> idx_total=4 -> Fila 1, Columna 0
-                
-                # Usaremos 4 columnas: Posiciones 0-3 (Fila 0), 4-7 (Fila 1), 8-11 (Fila 2)
-                row_idx = idx_total // cols
-                col_idx = idx_total % cols
+        # --- Dibujar el Título ---
+        title_text = f"10 imágenes más similares a {query_name} (Distancia {metric_name})"
+        text_w, text_h = draw.textbbox((0, 0), title_text, font=font_title)[2:]
+        draw.text(((ancho_final - text_w) / 2, IMG_SPACING), title_text, fill='black', font=font_title)
+        draw.line([(0, TITLE_HEIGHT - IMG_SPACING), (ancho_final, TITLE_HEIGHT - IMG_SPACING)], fill='gray', width=1)
 
-                # Si estamos en la primera fila (row_idx=0), la consulta ocupa el col=0
-                # Si queremos mantener la consulta en (0,0), los resultados inician en (0,1)
-                
-                # Simplificamos: Mostramos 11 elementos (Consulta + 10 resultados) en una grilla de 4x3 (12 slots)
-                
-                
-                
-                # --- Usando una grilla lineal de 4 ---
-                row_idx = (i + 1) // 4
-                col_idx = (i + 1) % 4
-                
-                # Si el puesto es 1 (i=0), debe ir a la fila 0, col 1
-                if i < 3: # Primera Fila (Puestos 1, 2, 3)
-                    row_idx = 0
-                    col_idx = i + 1
-                elif i < 7: # Segunda Fila (Puestos 4, 5, 6, 7)
-                    row_idx = 1
-                    col_idx = i - 3
-                else: # Tercera Fila (Puestos 8, 9, 10)
-                    row_idx = 2
-                    col_idx = i - 7
-                
-                
-                x_start = col_idx * IMG_SIZE + (col_idx + 1) * IMG_SPACING
-                y_start = row_idx * (IMG_SIZE + INFO_HEIGHT) + IMG_SPACING
-                
-                try:
-                    res_img_path = os.path.join(DATASET_PATH, res['nombre'])
-                    res_img = Image.open(res_img_path).resize((IMG_SIZE, IMG_SIZE))
-                    img_compuesta.paste(res_img, (x_start, y_start))
-                    
-                    # Dibujar información
-                    text_line_1 = f"#{puesto} ({res['nombre']})"
-                    text_line_2 = f"Dist: {res['dist']:.2f}"
-                    
-                    draw.text((x_start, y_start + IMG_SIZE), text_line_1, fill='black', font=font)
-                    draw.text((x_start, y_start + IMG_SIZE + 18), text_line_2, fill='black', font=font)
-                    
-                except FileNotFoundError:
-                    # Dibujar un cuadro gris si el archivo no existe
-                    draw.rectangle([x_start, y_start, x_start + IMG_SIZE, y_start + IMG_SIZE], fill="gray")
-                    draw.text((x_start, y_start + IMG_SIZE), f"NO ENCONTRADO", fill='black', font=font)
+        # --- Dibujar la Imagen de Consulta (Posición 0) ---
+        y_offset = TITLE_HEIGHT
+        
+        q_img_resized = query_image.resize((IMG_SIZE, IMG_SIZE))
+        img_compuesta.paste(q_img_resized, (IMG_SPACING, y_offset + IMG_SPACING))
+        draw.text((IMG_SPACING, y_offset + IMG_SIZE + IMG_SPACING), f"CONSULTA: {query_name}", fill='black', font=font_info)
+        
+        # --- Dibujar Resultados (Posiciones 1 a 10) ---
+        for i, res in enumerate(metric_results):
+            puesto = i + 1
             
-            img_compuesta.save(os.path.join(query_dir, f"imagen_consolidada_{metric_key}.jpg"))
+            if i < 3:
+                row_idx = 0
+                col_idx = i + 1
+            elif i < 7:
+                row_idx = 1
+                col_idx = i - 3
+            else:
+                row_idx = 2
+                col_idx = i - 7
             
+            
+            x_start = col_idx * IMG_SIZE + (col_idx + 1) * IMG_SPACING
+            y_start = y_offset + row_idx * (IMG_SIZE + INFO_HEIGHT) + IMG_SPACING
+            
+            try:
+                res_img_path = os.path.join(DATASET_PATH, res['nombre'])
+                res_img = Image.open(res_img_path).resize((IMG_SIZE, IMG_SIZE))
+                img_compuesta.paste(res_img, (x_start, y_start))
+                
+                text_line_1 = f"#{puesto} ({res['nombre']})"
+                text_line_2 = f"Dist: {res['dist']:.2f}"
+                
+                draw.text((x_start, y_start + IMG_SIZE), text_line_1, fill='black', font=font_info)
+                draw.text((x_start, y_start + IMG_SIZE + 18), text_line_2, fill='black', font=font_info)
+                
+            except FileNotFoundError:
+                draw.rectangle([x_start, y_start, x_start + IMG_SIZE, y_start + IMG_SIZE], fill="gray")
+                draw.text((x_start, y_start + IMG_SIZE), f"NO ENCONTRADO", fill='black', font=font_info)
+        
+        img_compuesta.save(os.path.join(query_dir, f"imagen_consolidada_{metric_key}.jpg"))
+        
     # Ejecutar para Euclidiana
-    procesar_metrica('euclidiana', resultados['euc'])
+    generar_imagen_consolidada('euclidiana', resultados['euc'], 'Euclidiana')
     
     # Ejecutar para Coseno
-    procesar_metrica('coseno', resultados['cos'])
+    generar_imagen_consolidada('coseno', resultados['cos'], 'Coseno')
     
     return query_dir
 
@@ -365,8 +428,10 @@ else:
                 st.error(f"No se pudo cargar la imagen de preview: {nombre_seleccionado}. Revisa la estructura de carpetas.")
                 query_features = None 
 
-    # --- LÓGICA DE BÚSQUEDA Y RESULTADOS ---
+# --- LÓGICA DE BÚSQUEDA Y RESULTADOS ---
     
+    # --- LÓGICA DE BÚSQUEDA Y RESULTADOS ---
+
     if query_features is not None:
         
         if st.button('Buscar imágenes similares', type="primary"):
@@ -382,9 +447,14 @@ else:
                     ignorar_self=ignorar_self
                 )
                 
-                # --- Lógica de Persistencia ---
+                # --- Lógica de Persistencia (CORREGIDA) ---
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                subfolder_name = f"consulta_{query_name.split('.')[0]}_{timestamp}"
+                
+                # Obtener el nombre limpio del archivo de consulta (ej: 10011)
+                clean_query_name = query_name.split('.')[0] 
+                
+                # CORRECCIÓN: Usar el formato nombre_fecha_hora
+                subfolder_name = f"consulta_{clean_query_name}_{timestamp}"
                 
                 query_dir = guardar_consulta_y_resultados(query_image, query_name, resultado, subfolder_name)
                 
