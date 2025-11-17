@@ -32,9 +32,7 @@ DATASET_PATH = os.path.join(DATA_DIR, 'dataset')
 FEATURES_FILE = os.path.join(FEATURES_DIR, 'dataset_features.npy')
 NAMES_FILE = os.path.join(FEATURES_DIR, 'dataset_names.npy') 
 
-# --- Funciones de Carga y Lógica (Sin Cambios Relevantes) ---
-# ... (Funciones cargar_modelo, cargar_imagenes_dataset, cargar_caracteristicas_dataset, prepare_image, _extract_features, buscar_vecinos se mantienen igual)
-# NOTA: Por brevedad, el cuerpo de las funciones se omite aquí, pero se mantiene en el código final.
+# --- Funciones de Carga y Lógica (Se mantienen igual) ---
 
 @st.cache_resource
 def cargar_modelo():
@@ -51,7 +49,7 @@ def cargar_imagenes_dataset(carpeta):
 
 @st.cache_data
 def cargar_caracteristicas_dataset(_model): 
-    # ... (código de carga y cacheado de features) ...
+    # ... (código de carga y cacheado de features - SE MANTIENE IGUAL) ...
     os.makedirs(FEATURES_DIR, exist_ok=True)
     rutas_dataset, nombres_actuales = cargar_imagenes_dataset(DATASET_PATH)
     
@@ -137,6 +135,7 @@ def _extract_features(img_input, model):
     features = model.predict(img_preprocessed, verbose=0)
     return features.flatten()
 
+# --- Función buscar_vecinos (se mantiene con la corrección anterior) ---
 def buscar_vecinos(features_dataset, features_query, nombres_dataset, 
                          radio_euc, radio_cos, top_k=10, ignorar_self=False):
     """ Busca los k-vecinos más cercanos que estén dentro de un radio. """
@@ -147,77 +146,50 @@ def buscar_vecinos(features_dataset, features_query, nombres_dataset,
     
     nombres_dataset = np.array(nombres_dataset)
     
-    # --- Lógica de exclusión de la propia imagen (solo si ignorar_self es True) ---
+    dist_euc_filtered = dist_euc_all
+    nombres_euc_filtered = nombres_dataset
+    dist_cos_filtered = dist_cos_all
+    nombres_cos_filtered = nombres_dataset
+    
+    # Lógica de exclusión de la propia imagen (solo si ignorar_self es True)
     if ignorar_self:
-        # Encontramos la distancia CERO (o muy cercana a cero)
-        # Esto debería corresponder a la propia imagen consultada
-        
-        # Filtro de índice: excluimos el que tenga la distancia más pequeña
-        # Usamos < 1e-6 para ser robustos contra errores de punto flotante.
         idx_self_euc = np.argmin(dist_euc_all)
         idx_self_cos = np.argmin(dist_cos_all)
 
-        # Si el mínimo es casi cero, lo ignoramos.
         if dist_euc_all[idx_self_euc] < 1e-6:
-            # Creamos una máscara que excluye el índice del self-match
             mask_euc = np.arange(len(features_dataset)) != idx_self_euc
             dist_euc_filtered = dist_euc_all[mask_euc]
             nombres_euc_filtered = nombres_dataset[mask_euc]
-        else:
-            dist_euc_filtered = dist_euc_all
-            nombres_euc_filtered = nombres_dataset
             
         if dist_cos_all[idx_self_cos] < 1e-6:
             mask_cos = np.arange(len(features_dataset)) != idx_self_cos
             dist_cos_filtered = dist_cos_all[mask_cos]
             nombres_cos_filtered = nombres_dataset[mask_cos]
-        else:
-            dist_cos_filtered = dist_cos_all
-            nombres_cos_filtered = nombres_dataset
-    else:
-        # Si no se debe ignorar, usamos todos los resultados
-        dist_euc_filtered = dist_euc_all
-        nombres_euc_filtered = nombres_dataset
-        dist_cos_filtered = dist_cos_all
-        nombres_cos_filtered = nombres_dataset
 
 
-    # --- Procesar Resultados (Euclidiana) ---
+    # Procesar Resultados (Euclidiana)
     idx_euc_sorted = np.argsort(dist_euc_filtered)
     resultados_euc = []
-    
     for i in range(len(idx_euc_sorted)):
         idx = idx_euc_sorted[i]
         dist = dist_euc_filtered[idx]
-        
-        if dist > radio_euc: 
-            break
-            
+        if dist > radio_euc: break
         resultados_euc.append({'nombre': nombres_euc_filtered[idx], 'dist': dist})
-        
-        if len(resultados_euc) >= top_k: 
-            break
+        if len(resultados_euc) >= top_k: break
 
-    # --- Procesar Resultados (Coseno) ---
+    # Procesar Resultados (Coseno)
     idx_cos_sorted = np.argsort(dist_cos_filtered)
     resultados_cos = []
-    
     for i in range(len(idx_cos_sorted)):
         idx = idx_cos_sorted[i]
         dist = dist_cos_filtered[idx]
-        
-        if dist > radio_cos: 
-            break
-            
+        if dist > radio_cos: break
         resultados_cos.append({'nombre': nombres_cos_filtered[idx], 'dist': dist})
-        
-        if len(resultados_cos) >= top_k: 
-            break
+        if len(resultados_cos) >= top_k: break
 
     return {'euc': resultados_euc, 'cos': resultados_cos}
 
-# --- NUEVA FUNCIÓN DE PERSISTENCIA ---
-# --- FUNCIÓN DE PERSISTENCIA MODIFICADA ---
+# --- FUNCIÓN DE PERSISTENCIA (Se mantiene igual) ---
 def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder_name):
     """ Guarda la imagen de consulta, los resultados en un CSV unificado, y las imágenes consolidadas. """
     
@@ -230,7 +202,6 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
     
     # 3. Generar CSV Unificado con Columna 'Unanime'
     
-    # Nos aseguramos de que ambas listas tengan la misma longitud para unirlas (max 10)
     max_len = max(len(resultados['euc']), len(resultados['cos']))
     
     data = []
@@ -258,13 +229,11 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
             row['Nombre_Archivo_Cos'] = 'N/A'
             row['Distancia_Cos'] = 'N/A'
         
-        # --- NUEVA COLUMNA: UNANIME ---
-        # Es 1 si el nombre del archivo de Euc y Cos coinciden en este puesto, 0 si no
-        # Se asume que no hay unanimidad si alguno de los resultados es 'N/A'
+        # Columna: UNANIME
         if nombre_euc != 'N/A' and nombre_cos != 'N/A':
             row['Unanime'] = 1 if nombre_euc == nombre_cos else 0
         else:
-            row['Unanime'] = 0 # No hay acuerdo si falta un resultado
+            row['Unanime'] = 0 
             
         data.append(row)
         
@@ -274,7 +243,7 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
     csv_file = os.path.join(query_dir, f"resultados_unificados.csv")
     df.to_csv(csv_file, index=False)
     
-    # 4. Generar Imágenes Consolidadas con Título (sin cambios)
+    # 4. Generar Imágenes Consolidadas con Título (Sin cambios en esta versión)
     
     def generar_imagen_consolidada(metric_key, metric_results, metric_name):
         if not metric_results: return
@@ -356,10 +325,64 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
     
     return query_dir
 
-# --- Interfaz Principal de la Aplicación (MODIFICADA) ---
+# --- INTERFAZ PRINCIPAL CON REESTRUCTURA Y MEJORAS ESTÉTICAS ---
 
-st.set_page_config(page_title="Buscador de Carátulas", layout="wide")
-st.title("🖼️ Buscador de Carátulas de Álbumes Similares")
+# 1. CSS para centrar y estilizar elementos (SE MANTIENE IGUAL)
+STYLING_CSS = """
+<style>
+/* Centrar el título principal */
+h1 {
+    text-align: center;
+    font-family: 'Times New Roman', Times, serif; /* Tipografía diferente */
+    font-weight: 700;
+    color: #333333;
+    border-bottom: 2px solid #DDDDDD;
+    padding-bottom: 10px;
+}
+
+/* Centrar el botón 'Buscar' y reducir su ancho para que no domine el espacio */
+div.stButton > button {
+    display: block;
+    margin: 0 auto;
+    width: 100%; 
+    max-width: 250px; /* Ajustado para que se vea mejor en la columna */
+    background-color: #4CAF50; 
+    border-radius: 8px;
+}
+
+/* Estilo para los contenedores de parámetros y resultados */
+.stContainer {
+    padding: 20px;
+    border: 1px solid #E0E0E0;
+    border-radius: 8px;
+    box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.05);
+    margin-bottom: 20px;
+}
+
+/* Estilo para los títulos de sección */
+h2 {
+    color: #555555;
+    border-left: 5px solid #007bff;
+    padding-left: 10px;
+    margin-top: 10px;
+    margin-bottom: 15px;
+}
+
+/* Reducir el margen inferior del st.image para compactar la vista */
+.stImage {
+    margin-bottom: -15px;
+}
+
+/* Estilo para los number_input dentro de la columna derecha */
+.stNumberInput {
+    margin-bottom: 15px; /* Espacio entre los radios */
+}
+</style>
+"""
+st.markdown(STYLING_CSS, unsafe_allow_html=True)
+st.set_page_config(page_title="Buscador de Carátulas", layout="wide") 
+
+st.title("Buscador de Carátulas de Álbumes Similares")
 
 feature_extractor = cargar_modelo()
 
@@ -369,26 +392,18 @@ with st.spinner('Cargando y verificando base de datos de imágenes...'):
 if features_dataset is None or not nombres_dataset:
     st.error("No se pudo cargar la base de datos. Revisa la consola y la carpeta 'data/dataset'.")
 else:
-    st.success(f"¡Base de datos lista! Se cargaron {len(nombres_dataset)} imágenes.")
+    st.success(f"Base de datos lista! Se cargaron {len(nombres_dataset)} imágenes.")
     st.markdown("---")
     
-    # --- CONTROLES DE BÚSQUEDA ---
-    st.subheader("Parámetros de Búsqueda (Top 10)")
-    col_radio1, col_radio2 = st.columns(2)
-    with col_radio1:
-        radio_euc = st.number_input("Radio de Búsqueda (Euclidiana):", min_value=0.0, value=30.0, step=0.5)
-    with col_radio2:
-        radio_cos = st.number_input("Radio de Búsqueda (Coseno):", min_value=0.0, max_value=2.0, value=0.45, step=0.01)
-
     # --- TABS PARA MÉTODOS DE BÚSQUEDA ---
-    tab1, tab2 = st.tabs(["📤 Buscar por Carga", "🗂️ Buscar por Dataset"])
+    tab1, tab2 = st.tabs(["Buscar por Carga", "Buscar por Dataset"]) 
 
     query_features = None
     ignorar_self = False
     query_image = None
     query_name = ""
 
-    # --- Tab 1: Cargar Imagen ---
+    # --- Tab 1: Cargar Imagen (REESTRUCTURADO) ---
     with tab1:
         uploaded_file = st.file_uploader(
             "Sube una imagen de consulta aquí:",
@@ -396,15 +411,54 @@ else:
         )
         
         if uploaded_file is not None:
-            # Almacenar el objeto PIL y el nombre
             query_image = Image.open(uploaded_file)
             query_name = uploaded_file.name
-            st.image(query_image, caption='Tu imagen de consulta', width=250)
+            
             uploaded_file.seek(0)
             query_features = _extract_features(uploaded_file, feature_extractor) 
             ignorar_self = False
 
-    # --- Tab 2: Seleccionar del Dataset ---
+            # --- NUEVA ESTRUCTURA DE COLUMNAS PARA ALINEAR IMAGEN / CONTROLES ---
+            col_img, col_controls = st.columns([1, 1.5]) # Imagen (1) | Controles (1.5)
+            
+            with col_img:
+                # 1. Imagen a la izquierda
+                st.image(query_image, caption='Tu imagen de consulta', width=250)
+            
+            with col_controls:
+                # 2. Controles de radio y botón a la derecha, uno debajo del otro.
+                
+                # Input Euclidiana
+                radio_euc = st.number_input("Radio de Búsqueda (Euclidiana):", min_value=0.0, value=30.0, step=0.5, key="euc_carga")
+                
+                # Input Coseno
+                radio_cos = st.number_input("Radio de Búsqueda (Coseno):", min_value=0.0, max_value=2.0, value=0.45, step=0.01, key="cos_carga")
+                
+                # Botón de búsqueda
+                st.markdown('<div style="height: 15px;"></div>', unsafe_allow_html=True) # Espacio vertical
+                if st.button('Buscar imágenes similares', type="primary", key="btn_carga"):
+                    
+                    # Ejecutar Lógica de Búsqueda
+                    with st.spinner('Buscando...'):
+                        resultado = buscar_vecinos(
+                            features_dataset, 
+                            query_features, 
+                            nombres_dataset,
+                            radio_euc,
+                            radio_cos,
+                            top_k=10,
+                            ignorar_self=ignorar_self
+                        )
+                        
+                        # Llamar a la lógica de resultados
+                        st.session_state['resultado'] = resultado
+                        st.session_state['query_info'] = (query_image, query_name, radio_euc, radio_cos, ignorar_self)
+                        st.session_state['run_search'] = True
+                    
+                    st.rerun()
+
+
+    # --- Tab 2: Seleccionar del Dataset (REESTRUCTURADO) ---
     with tab2:
         nombre_seleccionado = st.selectbox(
             "Selecciona una imagen del dataset:",
@@ -420,78 +474,102 @@ else:
             
             query_image_path = os.path.join(DATASET_PATH, nombre_seleccionado)
             try:
-                # Almacenar el objeto PIL y el nombre
                 query_image = Image.open(query_image_path)
                 query_name = nombre_seleccionado
-                st.image(query_image, caption=f'Consulta: {nombre_seleccionado}', width=250)
+                
+                # --- NUEVA ESTRUCTURA DE COLUMNAS PARA ALINEAR IMAGEN / CONTROLES ---
+                col_img, col_controls = st.columns([1, 1.5])
+                
+                with col_img:
+                    # 1. Imagen a la izquierda
+                    st.image(query_image, caption=f'Consulta: {nombre_seleccionado}', width=250)
+                    
+                with col_controls:
+                    # 2. Controles de radio y botón a la derecha
+                    
+                    # Input Euclidiana
+                    radio_euc = st.number_input("Radio de Búsqueda (Euclidiana):", min_value=0.0, value=30.0, step=0.5, key="euc_dataset")
+                    
+                    # Input Coseno
+                    radio_cos = st.number_input("Radio de Búsqueda (Coseno):", min_value=0.0, max_value=2.0, value=0.45, step=0.01, key="cos_dataset")
+                    
+                    # Botón de búsqueda
+                    st.markdown('<div style="height: 15px;"></div>', unsafe_allow_html=True) # Espacio vertical
+                    if st.button('Buscar imágenes similares', type="primary", key="btn_dataset"):
+                        
+                        # Ejecutar Lógica de Búsqueda
+                        with st.spinner('Buscando...'):
+                            resultado = buscar_vecinos(
+                                features_dataset, 
+                                query_features, 
+                                nombres_dataset,
+                                radio_euc,
+                                radio_cos,
+                                top_k=10,
+                                ignorar_self=ignorar_self
+                            )
+                            # Llamar a la lógica de resultados
+                            st.session_state['resultado'] = resultado
+                            st.session_state['query_info'] = (query_image, query_name, radio_euc, radio_cos, ignorar_self)
+                            st.session_state['run_search'] = True
+                        
+                        st.rerun()
+                        
             except FileNotFoundError:
                 st.error(f"No se pudo cargar la imagen de preview: {nombre_seleccionado}. Revisa la estructura de carpetas.")
                 query_features = None 
 
-# --- LÓGICA DE BÚSQUEDA Y RESULTADOS ---
-    
-    # --- LÓGICA DE BÚSQUEDA Y RESULTADOS ---
 
-    if query_features is not None:
+    # --- LÓGICA DE RESULTADOS (MOVIMIENTO HACIA ABAJO) ---
+
+    # Inicializar estado para el primer run
+    if 'run_search' not in st.session_state:
+        st.session_state['run_search'] = False
+
+    if st.session_state['run_search']:
         
-        if st.button('Buscar imágenes similares', type="primary"):
-            
-            with st.spinner('Buscando... 🕵️'):
-                resultado = buscar_vecinos(
-                    features_dataset, 
-                    query_features, 
-                    nombres_dataset,
-                    radio_euc,
-                    radio_cos,
-                    top_k=10,
-                    ignorar_self=ignorar_self
-                )
+        resultado = st.session_state['resultado']
+        query_image, query_name, radio_euc, radio_cos, ignorar_self = st.session_state['query_info']
+        
+        # --- Lógica de Persistencia ---
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        clean_query_name = query_name.split('.')[0] 
+        subfolder_name = f"consulta_{clean_query_name}_{timestamp}"
+        
+        query_dir = guardar_consulta_y_resultados(query_image, query_name, resultado, subfolder_name)
+        
+        st.markdown("---")
+        st.success(f"Resultados guardados en: {query_dir}")
+        st.subheader('Resultados de la Búsqueda')
+        
+        # --- Función Auxiliar para Renderizar Resultados ---
+        def render_results(metric_name, results, radio):
+            with st.expander(f"**{metric_name}** | {len(results)} resultados encontrados (Radio ≤ {radio})", expanded=True):
                 
-                # --- Lógica de Persistencia (CORREGIDA) ---
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                if not results:
+                    st.info("No se encontraron resultados en este radio.")
+                    return
                 
-                # Obtener el nombre limpio del archivo de consulta (ej: 10011)
-                clean_query_name = query_name.split('.')[0] 
+                cols = st.columns(4) 
                 
-                # CORRECCIÓN: Usar el formato nombre_fecha_hora
-                subfolder_name = f"consulta_{clean_query_name}_{timestamp}"
-                
-                query_dir = guardar_consulta_y_resultados(query_image, query_name, resultado, subfolder_name)
-                
-                st.success(f"Resultados guardados en: {query_dir}")
-                # -----------------------------
-                
-                st.markdown("---")
-                st.subheader('Resultados de la Búsqueda')
-                
-                # --- Función Auxiliar para Renderizar Resultados ---
-                def render_results(metric_name, results, radio):
-                    with st.expander(f"⬇️ **{metric_name}** | {len(results)} resultados encontrados (Radio ≤ {radio})", expanded=True):
+                for i, res in enumerate(results):
+                    try:
+                        img_path = os.path.join(DATASET_PATH, res['nombre'])
+                        img = Image.open(img_path) 
                         
-                        if not results:
-                            st.info("No se encontraron resultados en este radio.")
-                            return
+                        puesto = i + 1
+                        caption_text = f"**#{puesto}** (Dist: {res['dist']:.2f})"
                         
-                        cols = st.columns(4) 
-                        
-                        for i, res in enumerate(results):
-                            try:
-                                img_path = os.path.join(DATASET_PATH, res['nombre'])
-                                img = Image.open(img_path) 
-                                
-                                puesto = i + 1
-                                caption_text = f"**#{puesto}** (Dist: {res['dist']:.2f})"
-                                
-                                with cols[i % 4]:
-                                    st.image(img, caption=caption_text, width=150) 
-                                    st.caption(res['nombre']) 
+                        with cols[i % 4]:
+                            st.image(img, caption=caption_text, width=150) 
+                            st.caption(res['nombre']) 
 
-                            except FileNotFoundError:
-                                st.warning(f"No se encontró el archivo para mostrar: {res['nombre']}")
+                    except FileNotFoundError:
+                        st.warning(f"No se encontró el archivo para mostrar: {res['nombre']}")
 
-                # --- Renderizar Resultados EUCLIDIANA ---
-                render_results("Euclidiana", resultado['euc'], radio_euc)
-                st.markdown("---") 
+        # --- Renderizar Resultados EUCLIDIANA ---
+        render_results("Euclidiana", resultado['euc'], radio_euc)
+        st.markdown("---") 
 
-                # --- Renderizar Resultados COSENO ---
-                render_results("Coseno", resultado['cos'], radio_cos)
+        # --- Renderizar Resultados COSENO ---
+        render_results("Coseno", resultado['cos'], radio_cos)
