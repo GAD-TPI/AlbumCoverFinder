@@ -13,6 +13,7 @@ logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import streamlit as st
 import glob
 import numpy as np
+import faiss # Importación de Faiss
 from tensorflow import keras
 from keras._tf_keras.keras.preprocessing import image
 from keras.applications.resnet50 import ResNet50, preprocess_input
@@ -27,6 +28,8 @@ RESULTS_DIR = os.path.join(BASE_DIR, 'results')
 DATASET_PATH = os.path.join(DATA_DIR, 'dataset') 
 FEATURES_FILE = os.path.join(FEATURES_DIR, 'dataset_features.npy')
 NAMES_FILE = os.path.join(FEATURES_DIR, 'dataset_names.npy') 
+
+# --- Funciones de Carga y Preprocesamiento ---
 
 @st.cache_resource
 def cargar_modelo(): # carga y configura el modelo ResNet50
@@ -114,21 +117,58 @@ def cargar_caracteristicas_dataset(_model): # carga características precalculad
 
     return features_dataset, nombres_cacheados
 
+@st.cache_data
+def cargar_indice_faiss(features_dataset):
+    """
+    Crea y entrena el índice Faiss para la búsqueda de vecinos más cercanos.
+    """
+    if features_dataset is None:
+        return None, None
+    
+    D = features_dataset.shape[1] # Dimensión del vector (2048)
+    data = features_dataset.astype('float32')
+    
+    # --- Índice Euclidiana (L2) ---
+    index_euc = faiss.IndexFlatL2(D)
+    index_euc.add(data) 
+    
+    # --- Índice Coseno (Producto Interno - IP) ---
+    # Normalizamos el dataset antes de crear el índice IP
+    faiss.normalize_L2(data)
+    index_cos = faiss.IndexFlatIP(D)
+    index_cos.add(data)
+    
+    return index_euc, index_cos
 
-def prepare_image(img_input, target_size=(224, 224)):     # preprocesa imagen para el modelo
-    img = image.load_img(img_input, target_size=target_size)
+def prepare_image(img_input, target_size=(224, 224)): 
+    # Abre la imagen usando PIL (funciona con uploaded_file)
+    img = Image.open(img_input)
+    # Asegúrate de que el objeto PIL esté en el tamaño objetivo
+    img = img.resize(target_size) 
+    
     img_array = image.img_to_array(img)
     img_array = np.expand_dims(img_array, axis=0)
     return preprocess_input(img_array)
 
 def _extract_features(img_input, model): # extrae características de una imagen
-    img_preprocessed = prepare_image(img_input)
-    features = model.predict(img_preprocessed, verbose=0)
-    return features.flatten()
+    try:
+        # Nota: Keras requiere que el puntero del archivo esté al inicio si se usa un objeto IO (uploaded_file).
+        # Esto ya está manejado en el bloque principal con uploaded_file.seek(0).
+        img_preprocessed = prepare_image(img_input)
+        features = model.predict(img_preprocessed, verbose=0)
+        return features.flatten()
+    except Exception as e:
+        # Captura errores si el archivo no puede ser leído (ej. archivo corrupto o formato incorrecto)
+        st.error(f"Error al procesar la imagen de consulta. Asegúrate de que es un archivo de imagen válido: {e}")
+        return None
 
-def buscar_vecinos(features_dataset, features_query, nombres_dataset,  
-                         radio_euc, radio_cos, top_k=10):
-    # Busca los k-NN dentro de un radio para ambas métricas
+# --- Funciones de Búsqueda ---
+
+def buscar_vecinos_brute_force(features_dataset, features_query, nombres_dataset, 
+                               radio_euc, radio_cos, top_k=10):
+    """
+    Método de búsqueda original (Fuerza Bruta/Sklearn).
+    """
     
     dist_euc_all = euclidean_distances([features_query], features_dataset)[0]
     dist_cos_all = cosine_distances([features_query], features_dataset)[0]
@@ -161,6 +201,50 @@ def buscar_vecinos(features_dataset, features_query, nombres_dataset,
         if len(resultados_cos) >= top_k: break
 
     return {'euc': resultados_euc, 'cos': resultados_cos}
+
+
+def buscar_vecinos_faiss(features_dataset, features_query, nombres_dataset, 
+                         radio_euc, radio_cos, top_k=10, index_euc=None, index_cos=None):
+    """
+    Método de búsqueda indexada Faiss.
+    """
+    if index_euc is None or index_cos is None:
+        st.error("Error: Índices Faiss no cargados. Intenta recargar la aplicación.")
+        return {'euc': [], 'cos': []}
+        
+    query_vector = features_query.astype('float32').reshape(1, -1)
+    
+    K_MAX = len(nombres_dataset) 
+
+    # --- Búsqueda Euclidiana (L2 Index) ---
+    D_euc, I_euc = index_euc.search(query_vector, K_MAX)
+    
+    resultados_euc = []
+    for dist, idx in zip(D_euc[0], I_euc[0]):
+        if dist > radio_euc: break
+        resultados_euc.append({'nombre': nombres_dataset[idx], 'dist': dist})
+        if len(resultados_euc) >= top_k: break
+
+    # --- Búsqueda Coseno (IP Index) ---
+    # 1. Normalizar el vector de consulta (requerido para IndexFlatIP)
+    faiss.normalize_L2(query_vector)
+    
+    # 2. Buscar similitudes (D_cos = Producto Interno)
+    D_cos, I_cos = index_cos.search(query_vector, K_MAX)
+    
+    resultados_cos = []
+    for sim, idx in zip(D_cos[0], I_cos[0]):
+        # Distancia Coseno = 1 - Similitud (IP)
+        dist = max(0, 1 - sim) 
+
+        if dist > radio_cos: break
+        resultados_cos.append({'nombre': nombres_dataset[idx], 'dist': dist})
+        if len(resultados_cos) >= top_k: break
+        
+    return {'euc': resultados_euc, 'cos': resultados_cos}
+
+
+# --- Funciones de Persistencia y Renderizado (Se mantienen iguales) ---
 
 def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder_name):
     # Guarda la imagen de consulta, los resultados en un CSV unificado, y las imágenes consolidadas
@@ -303,14 +387,6 @@ div.stButton > button {
     border-radius: 8px;
 }
 
-.stContainer {
-    padding: 20px;
-    border: 1px solid #E0E0E0;
-    border-radius: 8px;
-    box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.05);
-    margin-bottom: 20px;
-}
-
 h2 {
     color: #555555;
     border-left: 5px solid #007bff;
@@ -337,6 +413,10 @@ feature_extractor = cargar_modelo()
 
 with st.spinner('Cargando base de datos...'):
     features_dataset, nombres_dataset = cargar_caracteristicas_dataset(feature_extractor)
+    
+    # --- Cargar Índices FAISS (Solo si el dataset está cargado) ---
+    index_euc_faiss, index_cos_faiss = cargar_indice_faiss(features_dataset)
+
 
 if features_dataset is None or not nombres_dataset:
     st.error("No se pudo cargar la base de datos. Revisa la consola.")
@@ -348,6 +428,14 @@ else:
     query_image = None
     query_name = ""
 
+    # --- Selector de Motor de Búsqueda ---
+    search_engine = st.selectbox(
+        "Selecciona el Motor de Búsqueda:",
+        ("Fuerza Bruta (Sklearn)", "Faiss (Indexado)"),
+        key="search_engine_select"
+    )
+    st.markdown("---")
+    
     # Lógica de carga de archivo 
     uploaded_file = st.file_uploader(
         "Sube una imagen de consulta aquí:",
@@ -355,13 +443,25 @@ else:
     )
     
     if uploaded_file is not None:
-        query_image = Image.open(uploaded_file)
-        query_name = uploaded_file.name
         
+        # 1. Cargar imagen PIL y nombre (DEBE IR ANTES DE _extract_features)
+        try:
+            query_image = Image.open(uploaded_file)
+            query_name = uploaded_file.name
+        except Exception as e:
+            st.error(f"Error al abrir la imagen: {e}")
+            st.stop() 
+
+        # 2. Extraer Features
         uploaded_file.seek(0)
         query_features = _extract_features(uploaded_file, feature_extractor) 
         
-        # Estructura de columnas: Imagen (1) | Controles (1.5)
+        # --- CORRECCIÓN: DETENER EJECUCIÓN SI FALLA LA EXTRACCIÓN ---
+        if query_features is None:
+            # st.error ya fue llamado dentro de _extract_features. Detenemos el script aquí.
+            st.stop()
+        
+        # 3. Dibujar Interfaz de Controles
         col_img, col_controls = st.columns([1, 1.5])
         
         with col_img:
@@ -374,17 +474,30 @@ else:
             st.markdown('<div style="height: 15px;"></div>', unsafe_allow_html=True)
             if st.button('Buscar imágenes similares', type="primary", key="btn_carga"):
                 
-                with st.spinner('Buscando...'):
-                    resultado = buscar_vecinos(
-                        features_dataset, 
-                        query_features, 
-                        nombres_dataset,
-                        radio_euc,
-                        radio_cos
-                    )
+                with st.spinner(f'Buscando con {search_engine}...'):
+                    # Lógica de despacho de la búsqueda
+                    if search_engine == "Faiss (Indexado)":
+                        resultado = buscar_vecinos_faiss(
+                            features_dataset, 
+                            query_features, 
+                            nombres_dataset,
+                            radio_euc,
+                            radio_cos,
+                            index_euc=index_euc_faiss,
+                            index_cos=index_cos_faiss
+                        )
+                    else: # Fuerza Bruta (Sklearn)
+                        resultado = buscar_vecinos_brute_force(
+                            features_dataset, 
+                            query_features, 
+                            nombres_dataset,
+                            radio_euc,
+                            radio_cos
+                        )
                     
                     st.session_state['resultado'] = resultado
-                    st.session_state['query_info'] = (query_image, query_name, radio_euc, radio_cos) # Se elimina ignorar_self de query_info
+                    st.session_state['query_info'] = (query_image, query_name, radio_euc, radio_cos)
+                    st.session_state['search_engine'] = search_engine # Guardar motor usado
                     st.session_state['run_search'] = True
                 
                 st.rerun()
@@ -399,15 +512,16 @@ else:
         
         resultado = st.session_state['resultado']
         query_image, query_name, radio_euc, radio_cos = st.session_state['query_info']
+        used_engine = st.session_state['search_engine']
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         clean_query_name = query_name.split('.')[0] 
-        subfolder_name = f"consulta_{clean_query_name}_{timestamp}"
+        subfolder_name = f"consulta_{used_engine.split(' ')[0]}_{clean_query_name}_{timestamp}"
         
         query_dir = guardar_consulta_y_resultados(query_image, query_name, resultado, subfolder_name)
         
         st.markdown("---")
-        st.success(f"Resultados guardados en: {query_dir}")
+        st.success(f"Resultados guardados en: {query_dir} (Motor: {used_engine})")
         st.subheader('Resultados de la Búsqueda')
         
         def render_results(metric_name, results, radio):
