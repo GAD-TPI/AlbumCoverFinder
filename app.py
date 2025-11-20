@@ -5,6 +5,7 @@ import logging
 import datetime
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
+import time # Importado para medir el tiempo de ejecución
 
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
@@ -13,6 +14,7 @@ logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import streamlit as st
 import glob
 import numpy as np
+import faiss 
 from tensorflow import keras
 from keras._tf_keras.keras.preprocessing import image
 from keras.applications.resnet50 import ResNet50, preprocess_input
@@ -27,6 +29,8 @@ RESULTS_DIR = os.path.join(BASE_DIR, 'results')
 DATASET_PATH = os.path.join(DATA_DIR, 'dataset') 
 FEATURES_FILE = os.path.join(FEATURES_DIR, 'dataset_features.npy')
 NAMES_FILE = os.path.join(FEATURES_DIR, 'dataset_names.npy') 
+
+# --- Funciones de Carga y Preprocesamiento ---
 
 @st.cache_resource
 def cargar_modelo(): # carga y configura el modelo ResNet50
@@ -114,21 +118,54 @@ def cargar_caracteristicas_dataset(_model): # carga características precalculad
 
     return features_dataset, nombres_cacheados
 
+@st.cache_data
+def cargar_indice_faiss(features_dataset):
+    """
+    Crea y entrena el índice Faiss para la búsqueda de vecinos más cercanos.
+    """
+    if features_dataset is None:
+        return None, None
+    
+    D = features_dataset.shape[1] # Dimensión del vector (2048)
+    data = features_dataset.astype('float32')
+    
+    # --- Índice Euclidiana (L2) ---
+    index_euc = faiss.IndexFlatL2(D)
+    index_euc.add(data) 
+    
+    # --- Índice Coseno (Producto Interno - IP) ---
+    faiss.normalize_L2(data)
+    index_cos = faiss.IndexFlatIP(D)
+    index_cos.add(data)
+    
+    return index_euc, index_cos
 
-def prepare_image(img_input, target_size=(224, 224)):     # preprocesa imagen para el modelo
-    img = image.load_img(img_input, target_size=target_size)
+def prepare_image(img_input, target_size=(224, 224)): 
+    # Abre la imagen usando PIL (funciona con uploaded_file)
+    img = Image.open(img_input)
+    # Asegúrate de que el objeto PIL esté en el tamaño objetivo
+    img = img.resize(target_size) 
+    
     img_array = image.img_to_array(img)
     img_array = np.expand_dims(img_array, axis=0)
     return preprocess_input(img_array)
 
 def _extract_features(img_input, model): # extrae características de una imagen
-    img_preprocessed = prepare_image(img_input)
-    features = model.predict(img_preprocessed, verbose=0)
-    return features.flatten()
+    try:
+        img_preprocessed = prepare_image(img_input)
+        features = model.predict(img_preprocessed, verbose=0)
+        return features.flatten()
+    except Exception as e:
+        st.error(f"Error al procesar la imagen de consulta. Asegúrate de que es un archivo de imagen válido: {e}")
+        return None
 
-def buscar_vecinos(features_dataset, features_query, nombres_dataset,  
-                         radio_euc, radio_cos, top_k=10):
-    # Busca los k-NN dentro de un radio para ambas métricas
+# --- Funciones de Búsqueda ---
+
+def buscar_vecinos_brute_force(features_dataset, features_query, nombres_dataset, 
+                                 radio_euc, radio_cos, top_k=10):
+    """
+    Método de búsqueda original (Fuerza Bruta/ResNet).
+    """
     
     dist_euc_all = euclidean_distances([features_query], features_dataset)[0]
     dist_cos_all = cosine_distances([features_query], features_dataset)[0]
@@ -162,14 +199,74 @@ def buscar_vecinos(features_dataset, features_query, nombres_dataset,
 
     return {'euc': resultados_euc, 'cos': resultados_cos}
 
-def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder_name):
-    # Guarda la imagen de consulta, los resultados en un CSV unificado, y las imágenes consolidadas
+
+def buscar_vecinos_faiss(features_dataset, features_query, nombres_dataset, 
+                          radio_euc, radio_cos, top_k=10, index_euc=None, index_cos=None):
+    """
+    Método de búsqueda indexada Faiss.
+    """
+    if index_euc is None or index_cos is None:
+        st.error("Error: Índices Faiss no cargados. Intenta recargar la aplicación.")
+        return {'euc': [], 'cos': []}
+        
+    query_vector = features_query.astype('float32').reshape(1, -1)
+    K_MAX = len(nombres_dataset) 
+
+    # --- Búsqueda Euclidiana (L2 Index) ---
+    D_euc, I_euc = index_euc.search(query_vector, K_MAX)
+    
+    resultados_euc = []
+    for dist_squared, idx in zip(D_euc[0], I_euc[0]):
+        # Se aplica la raíz cuadrada (sqrt) para obtener la distancia L2 
+        dist = np.sqrt(dist_squared)
+        
+        if dist > radio_euc: break
+        resultados_euc.append({'nombre': nombres_dataset[idx], 'dist': dist})
+        if len(resultados_euc) >= top_k: break
+
+    # --- Búsqueda Coseno (IP Index) ---
+    faiss.normalize_L2(query_vector)
+    
+    D_cos, I_cos = index_cos.search(query_vector, K_MAX)
+    
+    resultados_cos = []
+    for sim, idx in zip(D_cos[0], I_cos[0]):
+        dist = max(0, 1 - sim) 
+
+        if dist > radio_cos: break
+        resultados_cos.append({'nombre': nombres_dataset[idx], 'dist': dist})
+        if len(resultados_cos) >= top_k: break
+        
+    return {'euc': resultados_euc, 'cos': resultados_cos}
+
+
+# Se modifica la función para aceptar los datos de log y el nombre del motor
+def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder_name, engine_text, log_data):
+    """
+    Función de persistencia: genera la carpeta de la consulta, guarda el CSV con resultados
+    unificados (Euclidiana y Coseno) y los mosaicos de imágenes, además de un log.
+    """
     
     query_dir = os.path.join(RESULTS_DIR, subfolder_name)
     os.makedirs(query_dir, exist_ok=True)
     
     query_image.save(os.path.join(query_dir, f"consulta_{query_name}.jpg"))
     
+    # --- LOGGING (Fix de codificación y contenido) ---
+    log_file = os.path.join(query_dir, "metadata_log.txt")
+    
+    # 🐞 FIX DE CODIFICACIÓN: Se añade encoding='utf-8' al abrir el archivo.
+    with open(log_file, 'w', encoding='utf-8') as f: 
+        f.write(f"--- LOG DE CONSULTA ---\n")
+        f.write(f"Fecha y Hora: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Imagen Consultada: {query_name}\n")
+        f.write(f"Motor de Búsqueda: {engine_text}\n")
+        f.write(f"Tiempo de Ejecución: {log_data['Tiempo_Ejecucion_s']:.4f} segundos\n")
+        f.write(f"Radio Euclidiana Usado: {log_data['Radio_Euclidiana']}\n")
+        f.write(f"Resultados Euc Encontrados: {log_data['Total_Euc']}/10\n")
+        f.write(f"Radio Coseno Usado: {log_data['Radio_Coseno']}\n")
+        f.write(f"Resultados Cos Encontrados: {log_data['Total_Cos']}/10\n")
+        
     max_len = max(len(resultados['euc']), len(resultados['cos']))
     
     data = []
@@ -207,13 +304,14 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
     csv_file = os.path.join(query_dir, f"resultados_unificados.csv")
     df.to_csv(csv_file, index=False)
     
+    # --- Mejora de Imágenes Generadas (Punto 3) ---
     def generar_imagen_consolidada(metric_key, metric_results, metric_name):
         if not metric_results: return
         
         IMG_SIZE = 150
-        IMG_SPACING = 5
-        INFO_HEIGHT = 40
-        TITLE_HEIGHT = 60 
+        IMG_SPACING = 10 
+        INFO_HEIGHT = 45 
+        TITLE_HEIGHT = 80 
         
         rows = 3
         cols = 4
@@ -225,26 +323,41 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
         draw = ImageDraw.Draw(img_compuesta)
         
         try:
+            # Fuentes de archivo de sistema (deberían estar disponibles)
             font_title = ImageFont.truetype("arial.ttf", 20)
-            font_info = ImageFont.truetype("arial.ttf", 16)
+            font_subtitle = ImageFont.truetype("arial.ttf", 18)
+            font_info = ImageFont.truetype("arial.ttf", 15)
         except IOError:
+            # Fallback a fuentes por defecto si las de sistema no se encuentran
             font_title = ImageFont.load_default()
+            font_subtitle = ImageFont.load_default()
             font_info = ImageFont.load_default()
             
-        title_text = f"10 imágenes más similares a {query_name} (Distancia {metric_name})"
-        text_w, text_h = draw.textbbox((0, 0), title_text, font=font_title)[2:]
-        draw.text(((ancho_final - text_w) / 2, IMG_SPACING), title_text, fill='black', font=font_title)
-        draw.line([(0, TITLE_HEIGHT - IMG_SPACING), (ancho_final, TITLE_HEIGHT - IMG_SPACING)], fill='gray', width=1)
+        # Título principal y subtítulo (motor)
+        main_title = f"10 imágenes más similares a {query_name}"
+        sub_title = f"(Motor: {engine_text} | Distancia: {metric_name})"
+        
+        text_w_main, _ = draw.textbbox((0, 0), main_title, font=font_title)[2:]
+        text_w_sub, _ = draw.textbbox((0, 0), sub_title, font=font_subtitle)[2:]
+        
+        draw.text(((ancho_final - text_w_main) / 2, IMG_SPACING), main_title, fill='black', font=font_title)
+        draw.text(((ancho_final - text_w_sub) / 2, IMG_SPACING + 25), sub_title, fill='gray', font=font_subtitle)
+
+        # Línea de separación
+        draw.line([(0, TITLE_HEIGHT - IMG_SPACING/2), (ancho_final, TITLE_HEIGHT - IMG_SPACING/2)], fill='gray', width=1)
 
         y_offset = TITLE_HEIGHT
         
+        # Dibuja la Consulta (Posición 0,0)
         q_img_resized = query_image.resize((IMG_SIZE, IMG_SIZE))
         img_compuesta.paste(q_img_resized, (IMG_SPACING, y_offset + IMG_SPACING))
-        draw.text((IMG_SPACING, y_offset + IMG_SIZE + IMG_SPACING), f"CONSULTA: {query_name}", fill='black', font=font_info)
+        draw.text((IMG_SPACING, y_offset + IMG_SIZE + IMG_SPACING), f"CONSULTA:", fill='black', font=font_info)
+        draw.text((IMG_SPACING, y_offset + IMG_SIZE + 18 + IMG_SPACING), f"{query_name}", fill='black', font=font_info)
         
         for i, res in enumerate(metric_results):
             puesto = i + 1
             
+            # Cálculo de la posición en la cuadrícula
             if i < 3:
                 row_idx = 0
                 col_idx = i + 1
@@ -255,7 +368,6 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
                 row_idx = 2
                 col_idx = i - 7
             
-            
             x_start = col_idx * IMG_SIZE + (col_idx + 1) * IMG_SPACING
             y_start = y_offset + row_idx * (IMG_SIZE + INFO_HEIGHT) + IMG_SPACING
             
@@ -264,11 +376,11 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
                 res_img = Image.open(res_img_path).resize((IMG_SIZE, IMG_SIZE))
                 img_compuesta.paste(res_img, (x_start, y_start))
                 
-                text_line_1 = f"#{puesto} ({res['nombre']})"
-                text_line_2 = f"Dist: {res['dist']:.2f}"
+                text_line_1 = f"#{puesto} (Dist: {res['dist']:.2f})"
                 
+                # Usar dos líneas de texto para evitar overflow del nombre de archivo.
                 draw.text((x_start, y_start + IMG_SIZE), text_line_1, fill='black', font=font_info)
-                draw.text((x_start, y_start + IMG_SIZE + 18), text_line_2, fill='black', font=font_info)
+                draw.text((x_start, y_start + IMG_SIZE + 18), f"Archivo: {res['nombre']}", fill='black', font=font_info)
                 
             except FileNotFoundError:
                 draw.rectangle([x_start, y_start, x_start + IMG_SIZE, y_start + IMG_SIZE], fill="gray")
@@ -303,14 +415,6 @@ div.stButton > button {
     border-radius: 8px;
 }
 
-.stContainer {
-    padding: 20px;
-    border: 1px solid #E0E0E0;
-    border-radius: 8px;
-    box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.05);
-    margin-bottom: 20px;
-}
-
 h2 {
     color: #555555;
     border-left: 5px solid #007bff;
@@ -337,6 +441,10 @@ feature_extractor = cargar_modelo()
 
 with st.spinner('Cargando base de datos...'):
     features_dataset, nombres_dataset = cargar_caracteristicas_dataset(feature_extractor)
+    
+    # --- Cargar Índices FAISS (Solo si el dataset está cargado) ---
+    index_euc_faiss, index_cos_faiss = cargar_indice_faiss(features_dataset)
+
 
 if features_dataset is None or not nombres_dataset:
     st.error("No se pudo cargar la base de datos. Revisa la consola.")
@@ -348,6 +456,15 @@ else:
     query_image = None
     query_name = ""
 
+    # --- Selector de Motor de Búsqueda ---
+    # Usar un key para garantizar que el valor se mantenga en el estado.
+    search_engine = st.selectbox(
+        "Selecciona el Motor de Búsqueda:",
+        ("Fuerza Bruta (ResNet)", "Faiss (Indexado)"),
+        key="search_engine_select"
+    )
+    st.markdown("---")
+    
     # Lógica de carga de archivo 
     uploaded_file = st.file_uploader(
         "Sube una imagen de consulta aquí:",
@@ -355,13 +472,24 @@ else:
     )
     
     if uploaded_file is not None:
-        query_image = Image.open(uploaded_file)
-        query_name = uploaded_file.name
         
+        # 1. Cargar imagen PIL y nombre 
+        try:
+            query_image = Image.open(uploaded_file)
+            query_name = uploaded_file.name
+        except Exception as e:
+            st.error(f"Error al abrir la imagen: {e}")
+            st.stop() 
+
+        # 2. Extraer Features
         uploaded_file.seek(0)
-        query_features = _extract_features(uploaded_file, feature_extractor) 
+        query_features = _extract_features(uploaded_file, feature_extractor)
         
-        # Estructura de columnas: Imagen (1) | Controles (1.5)
+        # --- DETENER EJECUCIÓN SI FALLA LA EXTRACCIÓN ---
+        if query_features is None:
+            st.stop()
+        
+        # 3. Dibujar Interfaz de Controles
         col_img, col_controls = st.columns([1, 1.5])
         
         with col_img:
@@ -372,69 +500,115 @@ else:
             radio_cos = st.number_input("Radio de Búsqueda (Coseno):", min_value=0.0, max_value=2.0, value=0.45, step=0.01, key="cos_carga")
             
             st.markdown('<div style="height: 15px;"></div>', unsafe_allow_html=True)
+            
+            # --- Lógica de Búsqueda (Se ejecuta al presionar el botón) ---
             if st.button('Buscar imágenes similares', type="primary", key="btn_carga"):
                 
-                with st.spinner('Buscando...'):
-                    resultado = buscar_vecinos(
-                        features_dataset, 
-                        query_features, 
-                        nombres_dataset,
-                        radio_euc,
-                        radio_cos
-                    )
-                    
-                    st.session_state['resultado'] = resultado
-                    st.session_state['query_info'] = (query_image, query_name, radio_euc, radio_cos) # Se elimina ignorar_self de query_info
-                    st.session_state['run_search'] = True
+                start_time = time.perf_counter() 
                 
+                # Para evitar el problema de re-run con el selector, forzamos a que el motor
+                # a usar sea el valor actual del selectbox.
+                current_engine = st.session_state.search_engine_select
+
+                with st.spinner(f'Buscando con {current_engine}...'):
+                    # Lógica de despacho de la búsqueda
+                    if current_engine == "Faiss (Indexado)":
+                        resultado = buscar_vecinos_faiss(
+                            features_dataset, 
+                            query_features, 
+                            nombres_dataset,
+                            radio_euc,
+                            radio_cos,
+                            index_euc=index_euc_faiss,
+                            index_cos=index_cos_faiss
+                        )
+                    else: # Fuerza Bruta (ResNet)
+                        resultado = buscar_vecinos_brute_force(
+                            features_dataset, 
+                            query_features, 
+                            nombres_dataset,
+                            radio_euc,
+                            radio_cos
+                        )
+                    
+                end_time = time.perf_counter()
+                elapsed_time = end_time - start_time
+                
+                # Se almacena el resultado en la sesión
+                st.session_state['elapsed_time'] = elapsed_time
+                st.session_state['resultado'] = resultado
+                st.session_state['query_info'] = (query_image, query_name, radio_euc, radio_cos)
+                st.session_state['search_engine'] = current_engine # Usar el motor actual
+                
+                # Fuerza el renderizado para mostrar los resultados abajo
                 st.rerun()
 
+        # --- LÓGICA DE RESULTADOS (Se ejecuta si ya se hizo una búsqueda) ---
+        if 'resultado' in st.session_state:
+            
+            resultado = st.session_state['resultado']
+            query_image, query_name, radio_euc, radio_cos = st.session_state['query_info']
+            used_engine = st.session_state['search_engine']
+            elapsed_time = st.session_state['elapsed_time']
+            
+            
+            # --- NOMENCLATURA (Orden: Imagen_Metodo_Timestamp) ---
+            if used_engine == "Faiss (Indexado)":
+                engine_suffix = "indexado" 
+                engine_text = "Faiss (Indexado)"
+            else:
+                engine_suffix = "fuerzabruta" 
+                engine_text = "Fuerza Bruta"
 
-    # --- LÓGICA DE RESULTADOS (MOVIMIENTO HACIA ABAJO) ---
+            # Se genera el nombre de la carpeta en el orden deseado
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            clean_query_name = query_name.split('.')[0] 
+            # Formato: consulta_NOMBRE_METODO_FECHA
+            subfolder_name = f"consulta_{clean_query_name}_{engine_suffix}_{timestamp}"
+            
+            # Preparar datos para el log
+            log_data = {
+                'Tiempo_Ejecucion_s': elapsed_time,
+                'Motor_Busqueda': used_engine,
+                'Radio_Euclidiana': radio_euc,
+                'Radio_Coseno': radio_cos,
+                'Total_Euc': len(resultado['euc']),
+                'Total_Cos': len(resultado['cos'])
+            }
+            
+            query_dir = guardar_consulta_y_resultados(query_image, query_name, resultado, subfolder_name, engine_text, log_data) 
+            
+            st.markdown("---")
+            st.success(f"Resultados guardados en: **{query_dir}** (Motor: {engine_text})")
+            st.info(f"Tiempo de Búsqueda: **{elapsed_time:.4f} segundos**")
+            st.subheader('Resultados de la Búsqueda')
+            
+            
+            def render_results(metric_name, results, radio):
+                with st.expander(f"**{metric_name}** | {len(results)} resultados encontrados (Radio ≤ {radio})", expanded=True):
+                    
+                    if not results:
+                        st.info("No se encontraron resultados en este radio.")
+                        return
+                    
+                    cols = st.columns(4) 
+                    
+                    for i, res in enumerate(results):
+                        try:
+                            img_path = os.path.join(DATASET_PATH, res['nombre'])
+                            img = Image.open(img_path) 
+                            
+                            puesto = i + 1
+                            caption_text = f"**#{puesto}** (Dist: {res['dist']:.2f})"
+                            
+                            with cols[i % 4]:
+                                st.image(img, caption=caption_text, width=150) 
+                                st.caption(res['nombre']) 
 
-    if 'run_search' not in st.session_state:
-        st.session_state['run_search'] = False
+                        except FileNotFoundError:
+                            st.warning(f"No se encontró el archivo para mostrar: {res['nombre']}")
 
-    if st.session_state['run_search']:
-        
-        resultado = st.session_state['resultado']
-        query_image, query_name, radio_euc, radio_cos = st.session_state['query_info']
-        
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        clean_query_name = query_name.split('.')[0] 
-        subfolder_name = f"consulta_{clean_query_name}_{timestamp}"
-        
-        query_dir = guardar_consulta_y_resultados(query_image, query_name, resultado, subfolder_name)
-        
-        st.markdown("---")
-        st.success(f"Resultados guardados en: {query_dir}")
-        st.subheader('Resultados de la Búsqueda')
-        
-        def render_results(metric_name, results, radio):
-            with st.expander(f"**{metric_name}** | {len(results)} resultados encontrados (Radio ≤ {radio})", expanded=True):
-                
-                if not results:
-                    st.info("No se encontraron resultados en este radio.")
-                    return
-                
-                cols = st.columns(4) 
-                
-                for i, res in enumerate(results):
-                    try:
-                        img_path = os.path.join(DATASET_PATH, res['nombre'])
-                        img = Image.open(img_path) 
-                        
-                        puesto = i + 1
-                        caption_text = f"**#{puesto}** (Dist: {res['dist']:.2f})"
-                        
-                        with cols[i % 4]:
-                            st.image(img, caption=caption_text, width=150) 
-                            st.caption(res['nombre']) 
+            render_results("Euclidiana", resultado['euc'], radio_euc)
+            st.markdown("---") 
 
-                    except FileNotFoundError:
-                        st.warning(f"No se encontró el archivo para mostrar: {res['nombre']}")
-
-        render_results("Euclidiana", resultado['euc'], radio_euc)
-        st.markdown("---") 
-
-        render_results("Coseno", resultado['cos'], radio_cos)
+            render_results("Coseno", resultado['cos'], radio_cos)
