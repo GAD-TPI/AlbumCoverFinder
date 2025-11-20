@@ -209,14 +209,17 @@ def buscar_vecinos_faiss(features_dataset, features_query, nombres_dataset,
         return {'euc': [], 'cos': []}
         
     query_vector = features_query.astype('float32').reshape(1, -1)
-    
     K_MAX = len(nombres_dataset) 
 
     # --- Búsqueda Euclidiana (L2 Index) ---
+    # D_euc contiene la distancia EUCLIDIANA AL CUADRADO (L2^2)
     D_euc, I_euc = index_euc.search(query_vector, K_MAX)
     
     resultados_euc = []
-    for dist, idx in zip(D_euc[0], I_euc[0]):
+    for dist_squared, idx in zip(D_euc[0], I_euc[0]):
+        # *** CORRECCIÓN: Aplicar la raíz cuadrada (sqrt) para obtener la distancia L2 ***
+        dist = np.sqrt(dist_squared)
+        
         if dist > radio_euc: break
         resultados_euc.append({'nombre': nombres_dataset[idx], 'dist': dist})
         if len(resultados_euc) >= top_k: break
@@ -234,7 +237,6 @@ def buscar_vecinos_faiss(features_dataset, features_query, nombres_dataset,
         resultados_cos.append({'nombre': nombres_dataset[idx], 'dist': dist})
         if len(resultados_cos) >= top_k: break
         
-    # --- CORRECCIÓN DEL BUG ---
     return {'euc': resultados_euc, 'cos': resultados_cos}
 
 
