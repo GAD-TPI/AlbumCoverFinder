@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# CÓDIGO FINAL CON CORRECCIONES DE TEXTO Y LÓGICA FAISS
 
 import os
 import logging
@@ -13,7 +13,7 @@ logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import streamlit as st
 import glob
 import numpy as np
-import faiss # Importación de Faiss
+import faiss 
 from tensorflow import keras
 from keras._tf_keras.keras.preprocessing import image
 from keras.applications.resnet50 import ResNet50, preprocess_input
@@ -133,7 +133,6 @@ def cargar_indice_faiss(features_dataset):
     index_euc.add(data) 
     
     # --- Índice Coseno (Producto Interno - IP) ---
-    # Normalizamos el dataset antes de crear el índice IP
     faiss.normalize_L2(data)
     index_cos = faiss.IndexFlatIP(D)
     index_cos.add(data)
@@ -152,13 +151,10 @@ def prepare_image(img_input, target_size=(224, 224)):
 
 def _extract_features(img_input, model): # extrae características de una imagen
     try:
-        # Nota: Keras requiere que el puntero del archivo esté al inicio si se usa un objeto IO (uploaded_file).
-        # Esto ya está manejado en el bloque principal con uploaded_file.seek(0).
         img_preprocessed = prepare_image(img_input)
         features = model.predict(img_preprocessed, verbose=0)
         return features.flatten()
     except Exception as e:
-        # Captura errores si el archivo no puede ser leído (ej. archivo corrupto o formato incorrecto)
         st.error(f"Error al procesar la imagen de consulta. Asegúrate de que es un archivo de imagen válido: {e}")
         return None
 
@@ -167,7 +163,7 @@ def _extract_features(img_input, model): # extrae características de una imagen
 def buscar_vecinos_brute_force(features_dataset, features_query, nombres_dataset, 
                                radio_euc, radio_cos, top_k=10):
     """
-    Método de búsqueda original (Fuerza Bruta/Sklearn).
+    Método de búsqueda original (Fuerza Bruta/ResNet).
     """
     
     dist_euc_all = euclidean_distances([features_query], features_dataset)[0]
@@ -226,21 +222,19 @@ def buscar_vecinos_faiss(features_dataset, features_query, nombres_dataset,
         if len(resultados_euc) >= top_k: break
 
     # --- Búsqueda Coseno (IP Index) ---
-    # 1. Normalizar el vector de consulta (requerido para IndexFlatIP)
     faiss.normalize_L2(query_vector)
     
-    # 2. Buscar similitudes (D_cos = Producto Interno)
     D_cos, I_cos = index_cos.search(query_vector, K_MAX)
     
     resultados_cos = []
     for sim, idx in zip(D_cos[0], I_cos[0]):
-        # Distancia Coseno = 1 - Similitud (IP)
         dist = max(0, 1 - sim) 
 
         if dist > radio_cos: break
         resultados_cos.append({'nombre': nombres_dataset[idx], 'dist': dist})
         if len(resultados_cos) >= top_k: break
         
+    # --- CORRECCIÓN DEL BUG ---
     return {'euc': resultados_euc, 'cos': resultados_cos}
 
 
@@ -309,7 +303,7 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
         draw = ImageDraw.Draw(img_compuesta)
         
         try:
-            font_title = ImageFont.truetype("arial.ttf", 20)
+            font_title = ImageFont.truetype("arial.ttf", 24) # Aumentado un poco el tamaño del título
             font_info = ImageFont.truetype("arial.ttf", 16)
         except IOError:
             font_title = ImageFont.load_default()
@@ -431,7 +425,8 @@ else:
     # --- Selector de Motor de Búsqueda ---
     search_engine = st.selectbox(
         "Selecciona el Motor de Búsqueda:",
-        ("Fuerza Bruta (Sklearn)", "Faiss (Indexado)"),
+        # TEXTO CORREGIDO
+        ("Fuerza Bruta (ResNet)", "Faiss (Indexado)"),
         key="search_engine_select"
     )
     st.markdown("---")
@@ -444,7 +439,7 @@ else:
     
     if uploaded_file is not None:
         
-        # 1. Cargar imagen PIL y nombre (DEBE IR ANTES DE _extract_features)
+        # 1. Cargar imagen PIL y nombre 
         try:
             query_image = Image.open(uploaded_file)
             query_name = uploaded_file.name
@@ -456,9 +451,8 @@ else:
         uploaded_file.seek(0)
         query_features = _extract_features(uploaded_file, feature_extractor) 
         
-        # --- CORRECCIÓN: DETENER EJECUCIÓN SI FALLA LA EXTRACCIÓN ---
+        # --- DETENER EJECUCIÓN SI FALLA LA EXTRACCIÓN ---
         if query_features is None:
-            # st.error ya fue llamado dentro de _extract_features. Detenemos el script aquí.
             st.stop()
         
         # 3. Dibujar Interfaz de Controles
@@ -486,7 +480,7 @@ else:
                             index_euc=index_euc_faiss,
                             index_cos=index_cos_faiss
                         )
-                    else: # Fuerza Bruta (Sklearn)
+                    else: # Fuerza Bruta (ResNet)
                         resultado = buscar_vecinos_brute_force(
                             features_dataset, 
                             query_features, 
@@ -497,7 +491,7 @@ else:
                     
                     st.session_state['resultado'] = resultado
                     st.session_state['query_info'] = (query_image, query_name, radio_euc, radio_cos)
-                    st.session_state['search_engine'] = search_engine # Guardar motor usado
+                    st.session_state['search_engine'] = search_engine 
                     st.session_state['run_search'] = True
                 
                 st.rerun()
@@ -514,14 +508,23 @@ else:
         query_image, query_name, radio_euc, radio_cos = st.session_state['query_info']
         used_engine = st.session_state['search_engine']
         
+        # --- NOMENCLATURA: Asignar prefijo R o I ---
+        if used_engine == "Faiss (Indexado)":
+            engine_prefix = "I" # I = Indexado
+            engine_text = "Faiss"
+        else:
+            engine_prefix = "R" # R = Referencia/ResNet (Brute Force)
+            engine_text = "ResNet"
+
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         clean_query_name = query_name.split('.')[0] 
-        subfolder_name = f"consulta_{used_engine.split(' ')[0]}_{clean_query_name}_{timestamp}"
+        # Formato: consulta_R/I_NOMBRE_FECHA
+        subfolder_name = f"consulta_{engine_prefix}_{clean_query_name}_{timestamp}"
         
         query_dir = guardar_consulta_y_resultados(query_image, query_name, resultado, subfolder_name)
         
         st.markdown("---")
-        st.success(f"Resultados guardados en: {query_dir} (Motor: {used_engine})")
+        st.success(f"Resultados guardados en: {query_dir} (Motor: {engine_text})")
         st.subheader('Resultados de la Búsqueda')
         
         def render_results(metric_name, results, radio):
