@@ -552,18 +552,19 @@ else:
             elapsed_time = st.session_state['elapsed_time']
             
             
-            # --- NOMENCLATURA ---
+            # --- NOMENCLATURA (Orden: Imagen_Metodo_Timestamp) ---
             if used_engine == "Faiss (Indexado)":
-                engine_prefix = "indexado" 
+                engine_suffix = "indexado" 
                 engine_text = "Faiss (Indexado)"
             else:
-                engine_prefix = "fuerzabruta" 
+                engine_suffix = "fuerzabruta" 
                 engine_text = "Fuerza Bruta"
 
-            # Se genera una nueva marca de tiempo para el nombre de la carpeta (ya que el motor fue elegido)
+            # Se genera el nombre de la carpeta en el orden deseado
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             clean_query_name = query_name.split('.')[0] 
-            subfolder_name = f"consulta_{engine_prefix}_{clean_query_name}_{timestamp}"
+            # Formato: consulta_NOMBRE_METODO_FECHA
+            subfolder_name = f"consulta_{clean_query_name}_{engine_suffix}_{timestamp}"
             
             # Preparar datos para el log
             log_data = {
