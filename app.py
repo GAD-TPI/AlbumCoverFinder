@@ -1,10 +1,11 @@
-# CÓDIGO FINAL CON CORRECCIONES DE TEXTO Y LÓGICA FAISS
+# -*- coding: utf-8 -*-
 
 import os
 import logging
 import datetime
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
+import time # Importado para medir el tiempo de ejecución
 
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
@@ -161,7 +162,7 @@ def _extract_features(img_input, model): # extrae características de una imagen
 # --- Funciones de Búsqueda ---
 
 def buscar_vecinos_brute_force(features_dataset, features_query, nombres_dataset, 
-                               radio_euc, radio_cos, top_k=10):
+                                 radio_euc, radio_cos, top_k=10):
     """
     Método de búsqueda original (Fuerza Bruta/ResNet).
     """
@@ -200,7 +201,7 @@ def buscar_vecinos_brute_force(features_dataset, features_query, nombres_dataset
 
 
 def buscar_vecinos_faiss(features_dataset, features_query, nombres_dataset, 
-                         radio_euc, radio_cos, top_k=10, index_euc=None, index_cos=None):
+                          radio_euc, radio_cos, top_k=10, index_euc=None, index_cos=None):
     """
     Método de búsqueda indexada Faiss.
     """
@@ -217,7 +218,7 @@ def buscar_vecinos_faiss(features_dataset, features_query, nombres_dataset,
     
     resultados_euc = []
     for dist_squared, idx in zip(D_euc[0], I_euc[0]):
-        # *** CORRECCIÓN: Aplicar la raíz cuadrada (sqrt) para obtener la distancia L2 ***
+        # *** CORRECCIÓN APLICADA: Aplicar la raíz cuadrada (sqrt) para obtener la distancia L2 ***
         dist = np.sqrt(dist_squared)
         
         if dist > radio_euc: break
@@ -240,16 +241,30 @@ def buscar_vecinos_faiss(features_dataset, features_query, nombres_dataset,
     return {'euc': resultados_euc, 'cos': resultados_cos}
 
 
-# --- Funciones de Persistencia y Renderizado (Se mantienen iguales) ---
-
-def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder_name):
-    # Guarda la imagen de consulta, los resultados en un CSV unificado, y las imágenes consolidadas
+# Se modifica la función para aceptar los datos de log y el nombre del motor
+def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder_name, engine_text, log_data):
+    """
+    Función de persistencia: genera la carpeta de la consulta, guarda el CSV con resultados
+    unificados (Euclidiana y Coseno) y los mosaicos de imágenes, además de un log.
+    """
     
     query_dir = os.path.join(RESULTS_DIR, subfolder_name)
     os.makedirs(query_dir, exist_ok=True)
     
     query_image.save(os.path.join(query_dir, f"consulta_{query_name}.jpg"))
     
+    # --- LOGGING (Punto 1) ---
+    log_file = os.path.join(query_dir, "metadata_log.txt")
+    with open(log_file, 'w') as f:
+        f.write(f"--- LOG DE CONSULTA ---\n")
+        f.write(f"Imagen Consultada: {query_name}\n")
+        f.write(f"Motor de Búsqueda: {engine_text}\n")
+        f.write(f"Tiempo de Búsqueda: {log_data['Tiempo_Ejecucion_s']:.4f} segundos\n")
+        f.write(f"Radio Euclidiana Usado: {log_data['Radio_Euclidiana']}\n")
+        f.write(f"Resultados Euc Encontrados: {log_data['Total_Euc']}/10\n")
+        f.write(f"Radio Coseno Usado: {log_data['Radio_Coseno']}\n")
+        f.write(f"Resultados Cos Encontrados: {log_data['Total_Cos']}/10\n")
+        
     max_len = max(len(resultados['euc']), len(resultados['cos']))
     
     data = []
@@ -287,13 +302,14 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
     csv_file = os.path.join(query_dir, f"resultados_unificados.csv")
     df.to_csv(csv_file, index=False)
     
+    # --- Mejora de Imágenes Generadas (Punto 3) ---
     def generar_imagen_consolidada(metric_key, metric_results, metric_name):
         if not metric_results: return
         
         IMG_SIZE = 150
-        IMG_SPACING = 5
-        INFO_HEIGHT = 40
-        TITLE_HEIGHT = 60 
+        IMG_SPACING = 10 # Aumentado para mejor espaciado
+        INFO_HEIGHT = 45 # Aumentado para el texto de metadatos de las imágenes
+        TITLE_HEIGHT = 80 # Aumentado para el título multi-línea
         
         rows = 3
         cols = 4
@@ -305,26 +321,39 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
         draw = ImageDraw.Draw(img_compuesta)
         
         try:
-            font_title = ImageFont.truetype("arial.ttf", 24) # Aumentado un poco el tamaño del título
-            font_info = ImageFont.truetype("arial.ttf", 16)
+            font_title = ImageFont.truetype("arial.ttf", 20) 
+            font_subtitle = ImageFont.truetype("arial.ttf", 18)
+            font_info = ImageFont.truetype("arial.ttf", 15)
         except IOError:
             font_title = ImageFont.load_default()
+            font_subtitle = ImageFont.load_default()
             font_info = ImageFont.load_default()
             
-        title_text = f"10 imágenes más similares a {query_name} (Distancia {metric_name})"
-        text_w, text_h = draw.textbbox((0, 0), title_text, font=font_title)[2:]
-        draw.text(((ancho_final - text_w) / 2, IMG_SPACING), title_text, fill='black', font=font_title)
-        draw.line([(0, TITLE_HEIGHT - IMG_SPACING), (ancho_final, TITLE_HEIGHT - IMG_SPACING)], fill='gray', width=1)
+        # Título principal y subtítulo (motor)
+        main_title = f"10 imágenes más similares a {query_name}"
+        sub_title = f"(Motor: {engine_text} | Distancia: {metric_name})"
+        
+        text_w_main, _ = draw.textbbox((0, 0), main_title, font=font_title)[2:]
+        text_w_sub, _ = draw.textbbox((0, 0), sub_title, font=font_subtitle)[2:]
+        
+        draw.text(((ancho_final - text_w_main) / 2, IMG_SPACING), main_title, fill='black', font=font_title)
+        draw.text(((ancho_final - text_w_sub) / 2, IMG_SPACING + 25), sub_title, fill='gray', font=font_subtitle)
+
+        # Línea de separación
+        draw.line([(0, TITLE_HEIGHT - IMG_SPACING/2), (ancho_final, TITLE_HEIGHT - IMG_SPACING/2)], fill='gray', width=1)
 
         y_offset = TITLE_HEIGHT
         
+        # Dibuja la Consulta (Posición 0,0)
         q_img_resized = query_image.resize((IMG_SIZE, IMG_SIZE))
         img_compuesta.paste(q_img_resized, (IMG_SPACING, y_offset + IMG_SPACING))
-        draw.text((IMG_SPACING, y_offset + IMG_SIZE + IMG_SPACING), f"CONSULTA: {query_name}", fill='black', font=font_info)
+        draw.text((IMG_SPACING, y_offset + IMG_SIZE + IMG_SPACING), f"CONSULTA:", fill='black', font=font_info)
+        draw.text((IMG_SPACING, y_offset + IMG_SIZE + 18 + IMG_SPACING), f"{query_name}", fill='black', font=font_info)
         
         for i, res in enumerate(metric_results):
             puesto = i + 1
             
+            # Cálculo de la posición en la cuadrícula
             if i < 3:
                 row_idx = 0
                 col_idx = i + 1
@@ -335,7 +364,6 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
                 row_idx = 2
                 col_idx = i - 7
             
-            
             x_start = col_idx * IMG_SIZE + (col_idx + 1) * IMG_SPACING
             y_start = y_offset + row_idx * (IMG_SIZE + INFO_HEIGHT) + IMG_SPACING
             
@@ -344,11 +372,12 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
                 res_img = Image.open(res_img_path).resize((IMG_SIZE, IMG_SIZE))
                 img_compuesta.paste(res_img, (x_start, y_start))
                 
-                text_line_1 = f"#{puesto} ({res['nombre']})"
-                text_line_2 = f"Dist: {res['dist']:.2f}"
+                text_line_1 = f"#{puesto} (Dist: {res['dist']:.2f})"
                 
+                # Usar dos líneas de texto en lugar de una para evitar overflow
                 draw.text((x_start, y_start + IMG_SIZE), text_line_1, fill='black', font=font_info)
-                draw.text((x_start, y_start + IMG_SIZE + 18), text_line_2, fill='black', font=font_info)
+                # El nombre del archivo puede ser largo, se muestra en la segunda línea.
+                draw.text((x_start, y_start + IMG_SIZE + 18), f"Archivo: {res['nombre']}", fill='black', font=font_info)
                 
             except FileNotFoundError:
                 draw.rectangle([x_start, y_start, x_start + IMG_SIZE, y_start + IMG_SIZE], fill="gray")
@@ -427,7 +456,6 @@ else:
     # --- Selector de Motor de Búsqueda ---
     search_engine = st.selectbox(
         "Selecciona el Motor de Búsqueda:",
-        # TEXTO CORREGIDO
         ("Fuerza Bruta (ResNet)", "Faiss (Indexado)"),
         key="search_engine_select"
     )
@@ -470,6 +498,8 @@ else:
             st.markdown('<div style="height: 15px;"></div>', unsafe_allow_html=True)
             if st.button('Buscar imágenes similares', type="primary", key="btn_carga"):
                 
+                start_time = time.perf_counter() # ⬅️ INICIO DE MEDICIÓN DE TIEMPO
+                
                 with st.spinner(f'Buscando con {search_engine}...'):
                     # Lógica de despacho de la búsqueda
                     if search_engine == "Faiss (Indexado)":
@@ -491,10 +521,14 @@ else:
                             radio_cos
                         )
                     
-                    st.session_state['resultado'] = resultado
-                    st.session_state['query_info'] = (query_image, query_name, radio_euc, radio_cos)
-                    st.session_state['search_engine'] = search_engine 
-                    st.session_state['run_search'] = True
+                end_time = time.perf_counter() # ⬅️ FIN DE MEDICIÓN DE TIEMPO
+                elapsed_time = end_time - start_time
+                
+                st.session_state['elapsed_time'] = elapsed_time
+                st.session_state['resultado'] = resultado
+                st.session_state['query_info'] = (query_image, query_name, radio_euc, radio_cos)
+                st.session_state['search_engine'] = search_engine 
+                st.session_state['run_search'] = True
                 
                 st.rerun()
 
@@ -509,24 +543,37 @@ else:
         resultado = st.session_state['resultado']
         query_image, query_name, radio_euc, radio_cos = st.session_state['query_info']
         used_engine = st.session_state['search_engine']
+        elapsed_time = st.session_state['elapsed_time'] # ⬅️ TIEMPO RECUPERADO
+
         
-        # --- NOMENCLATURA: Asignar prefijo R o I ---
+        # --- NOMENCLATURA (Punto 2) ---
         if used_engine == "Faiss (Indexado)":
-            engine_prefix = "I" # I = Indexado
-            engine_text = "Faiss"
+            engine_prefix = "indexado" 
+            engine_text = "Faiss (Indexado)"
         else:
-            engine_prefix = "R" # R = Referencia/ResNet (Brute Force)
-            engine_text = "ResNet"
+            engine_prefix = "fuerzabruta" 
+            engine_text = "Fuerza Bruta"
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         clean_query_name = query_name.split('.')[0] 
-        # Formato: consulta_R/I_NOMBRE_FECHA
+        # Formato: consulta_MOTOR_NOMBRE_FECHA
         subfolder_name = f"consulta_{engine_prefix}_{clean_query_name}_{timestamp}"
         
-        query_dir = guardar_consulta_y_resultados(query_image, query_name, resultado, subfolder_name)
+        # Preparar datos para el log (Punto 1)
+        log_data = {
+            'Tiempo_Ejecucion_s': elapsed_time,
+            'Motor_Busqueda': used_engine,
+            'Radio_Euclidiana': radio_euc,
+            'Radio_Coseno': radio_cos,
+            'Total_Euc': len(resultado['euc']),
+            'Total_Cos': len(resultado['cos'])
+        }
+        
+        query_dir = guardar_consulta_y_resultados(query_image, query_name, resultado, subfolder_name, engine_text, log_data) # ⬅️ FUNCIÓN CON NUEVOS ARGUMENTOS
         
         st.markdown("---")
         st.success(f"Resultados guardados en: {query_dir} (Motor: {engine_text})")
+        st.info(f"Tiempo de Búsqueda: **{elapsed_time:.4f} segundos**")
         st.subheader('Resultados de la Búsqueda')
         
         def render_results(metric_name, results, radio):
