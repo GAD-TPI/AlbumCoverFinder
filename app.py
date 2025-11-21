@@ -26,9 +26,18 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 FEATURES_DIR = os.path.join(BASE_DIR, 'features')
 RESULTS_DIR = os.path.join(BASE_DIR, 'results')
-DATASET_PATH = os.path.join(DATA_DIR, 'dataset') 
-FEATURES_FILE = os.path.join(FEATURES_DIR, 'dataset_features.npy')
-NAMES_FILE = os.path.join(FEATURES_DIR, 'dataset_names.npy') 
+
+# --- SELECCIÓN DE DATASET (Modificar solo esta sección) ---
+# Descomenta la línea de la base de datos que deseas usar.
+# DATASET_NAME = 'dataset_20k' # Base de datos actual (20k)
+DATASET_NAME = 'dataset_80k' # Nueva base de datos (80k)
+# ---------------------------------------------------------
+
+# Rutas dependientes del dataset seleccionado
+DATASET_PATH = os.path.join(DATA_DIR, DATASET_NAME) 
+# Los archivos de caché ahora incluyen el nombre del dataset para evitar conflictos
+FEATURES_FILE = os.path.join(FEATURES_DIR, f'{DATASET_NAME}_features.npy')
+NAMES_FILE = os.path.join(FEATURES_DIR, f'{DATASET_NAME}_names.npy') 
 
 # --- Funciones de Carga y Preprocesamiento ---
 
@@ -57,11 +66,17 @@ def cargar_caracteristicas_dataset(_model): # carga características precalculad
     features_dataset = np.empty((0, 2048))
     nombres_cacheados = []
     
+    # 1. Intenta cargar datos existentes (cache)
     if os.path.exists(FEATURES_FILE) and os.path.exists(NAMES_FILE):
         try:
             features_dataset = np.load(FEATURES_FILE)
             nombres_cacheados = np.load(NAMES_FILE, allow_pickle=True).tolist()
+            # Si se cargan todos los nombres y el número de features coincide, asumimos que está completo.
+            if len(nombres_cacheados) == len(rutas_dataset) and len(features_dataset) == len(rutas_dataset):
+                st.info(f"Cargando {len(features_dataset)} características desde caché.")
+                return features_dataset, nombres_cacheados
         except Exception:
+            # Si falla la carga del cache (archivo corrupto), reinicia la base de datos de características
             features_dataset = np.empty((0, 2048))
             nombres_cacheados = []
             
@@ -77,15 +92,24 @@ def cargar_caracteristicas_dataset(_model): # carga características precalculad
 
     if rutas_a_procesar:
         BATCH_SIZE = 32 
+        SAVE_INTERVAL = 15 # Guardar el progreso cada 25 lotes
         total_lotes = (len(rutas_a_procesar) + BATCH_SIZE - 1) // BATCH_SIZE
-        progress_text_template = "Actualizando base de datos. Lote {current_batch}/{total_batches}..."
-        progress_bar = st.progress(0, text=progress_text_template.format(current_batch=0, total_lotes=total_lotes))
+        
+        # 🚀 MODIFICACIÓN: Texto simplificado para el progreso del lote.
+        progress_text_template = "Procesando Lote {current_batch}/{total_lotes} (Extrayendo Features...)"
+        
+        # NOTA: Usamos st.empty() para poner la barra sin el texto "Running..." de Streamlit.
+        progress_slot = st.empty()
+        progress_bar = progress_slot.progress(0, text=progress_text_template.format(current_batch=0, total_lotes=total_lotes))
 
-        temp_features_list = []
-        temp_names_list = []
 
+        # Lista temporal para acumular features procesadas en este RUN
+        features_a_procesar = []
+        
         for i in range(0, len(rutas_a_procesar), BATCH_SIZE):
             batch_num_actual = (i // BATCH_SIZE) + 1
+            
+            # Actualizamos el texto de la barra de progreso
             progress_bar.progress(batch_num_actual / total_lotes, text=progress_text_template.format(current_batch=batch_num_actual, total_lotes=total_lotes))
 
             batch_paths = rutas_a_procesar[i : i + BATCH_SIZE]
@@ -108,12 +132,25 @@ def cargar_caracteristicas_dataset(_model): # carga características precalculad
             batch_preprocessed = preprocess_input(batch_array)
             batch_features = _model.predict(batch_preprocessed, verbose=0)
             
-            temp_features_list.append(batch_features)
-            temp_names_list.extend(valid_batch_names)
+            # Acumulamos las features procesadas
+            features_a_procesar.append(batch_features)
+            nombres_cacheados.extend(valid_batch_names)
             
-        if temp_features_list:
-            features_dataset = np.vstack([features_dataset] + temp_features_list)
-            nombres_cacheados.extend(temp_names_list)
+            # 💾 GUARDADO INCREMENTAL
+            if batch_num_actual % SAVE_INTERVAL == 0 or batch_num_actual == total_lotes:
+                
+                # Consolidar las nuevas features procesadas con las ya cargadas (si las hay)
+                features_consolidadas = np.vstack([features_dataset] + features_a_procesar)
+                
+                # Guardar el estado actual en disco
+                np.save(FEATURES_FILE, features_consolidadas)
+                np.save(NAMES_FILE, nombres_cacheados)
+
+                # Actualizar features_dataset con la versión completa y limpiar lista temporal
+                features_dataset = features_consolidadas
+                features_a_procesar = []
+                st.info(f"💾 Progreso guardado: {len(nombres_cacheados)}/{len(rutas_dataset)} imágenes procesadas.")
+
         progress_bar.empty()
 
     return features_dataset, nombres_cacheados
@@ -255,10 +292,11 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
     # --- LOGGING (Fix de codificación y contenido) ---
     log_file = os.path.join(query_dir, "metadata_log.txt")
     
-    # 🐞 FIX DE CODIFICACIÓN: Se añade encoding='utf-8' al abrir el archivo.
+    # FIX DE CODIFICACIÓN: Se añade encoding='utf-8' al abrir el archivo.
     with open(log_file, 'w', encoding='utf-8') as f: 
         f.write(f"--- LOG DE CONSULTA ---\n")
         f.write(f"Fecha y Hora: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Dataset Utilizado: {DATASET_NAME}\n")
         f.write(f"Imagen Consultada: {query_name}\n")
         f.write(f"Motor de Búsqueda: {engine_text}\n")
         f.write(f"Tiempo de Ejecución: {log_data['Tiempo_Ejecucion_s']:.4f} segundos\n")
@@ -439,17 +477,20 @@ st.title("Buscador de Carátulas de Álbumes Similares")
 
 feature_extractor = cargar_modelo()
 
-with st.spinner('Cargando base de datos...'):
+with st.spinner(f'Cargando base de datos ({DATASET_NAME})...'):
     features_dataset, nombres_dataset = cargar_caracteristicas_dataset(feature_extractor)
     
-    # --- Cargar Índices FAISS (Solo si el dataset está cargado) ---
-    index_euc_faiss, index_cos_faiss = cargar_indice_faiss(features_dataset)
+    # Es vital verificar que features_dataset no esté vacío antes de cargar FAISS
+    if features_dataset is not None and len(features_dataset) > 0:
+        index_euc_faiss, index_cos_faiss = cargar_indice_faiss(features_dataset)
+    else:
+        index_euc_faiss, index_cos_faiss = None, None
 
 
-if features_dataset is None or not nombres_dataset:
-    st.error("No se pudo cargar la base de datos. Revisa la consola.")
+if features_dataset is None or not nombres_dataset or len(features_dataset) == 0:
+    st.error("No se pudo cargar la base de datos. Revisa la consola o borra los archivos .npy si están corruptos.")
 else:
-    st.success(f"Base de datos lista: {len(nombres_dataset)} imágenes cargadas.")
+    st.success(f"Base de datos lista: {len(nombres_dataset)} imágenes cargadas desde {DATASET_NAME}.")
     st.markdown("---")
     
     query_features = None
@@ -457,7 +498,6 @@ else:
     query_name = ""
 
     # --- Selector de Motor de Búsqueda ---
-    # Usar un key para garantizar que el valor se mantenga en el estado.
     search_engine = st.selectbox(
         "Selecciona el Motor de Búsqueda:",
         ("Fuerza Bruta (ResNet)", "Faiss (Indexado)"),
@@ -473,6 +513,13 @@ else:
     
     if uploaded_file is not None:
         
+        # Lógica de resetear la sesión si se sube un nuevo archivo.
+        if 'uploaded_file_name' not in st.session_state or st.session_state.uploaded_file_name != uploaded_file.name:
+            # Si el archivo es nuevo, limpiamos los resultados de la búsqueda anterior.
+            if 'resultado' in st.session_state:
+                del st.session_state['resultado']
+            st.session_state.uploaded_file_name = uploaded_file.name
+
         # 1. Cargar imagen PIL y nombre 
         try:
             query_image = Image.open(uploaded_file)
@@ -506,8 +553,7 @@ else:
                 
                 start_time = time.perf_counter() 
                 
-                # Para evitar el problema de re-run con el selector, forzamos a que el motor
-                # a usar sea el valor actual del selectbox.
+                # Usar el valor actual del selectbox
                 current_engine = st.session_state.search_engine_select
 
                 with st.spinner(f'Buscando con {current_engine}...'):
@@ -540,7 +586,7 @@ else:
                 st.session_state['query_info'] = (query_image, query_name, radio_euc, radio_cos)
                 st.session_state['search_engine'] = current_engine # Usar el motor actual
                 
-                # Fuerza el renderizado para mostrar los resultados abajo
+                # Forzar el renderizado para mostrar los resultados abajo
                 st.rerun()
 
         # --- LÓGICA DE RESULTADOS (Se ejecuta si ya se hizo una búsqueda) ---
