@@ -180,6 +180,10 @@ def cargar_indice_faiss(features_dataset):
 def prepare_image(img_input, target_size=(224, 224)): 
     # Abre la imagen usando PIL (funciona con uploaded_file)
     img = Image.open(img_input)
+
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+
     # Asegúrate de que el objeto PIL esté en el tamaño objetivo
     img = img.resize(target_size) 
     
@@ -287,6 +291,10 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
     query_dir = os.path.join(RESULTS_DIR, subfolder_name)
     os.makedirs(query_dir, exist_ok=True)
     
+    # 🌟 MODIFICACIÓN CLAVE AQUÍ: Convertir a RGB si no lo es, antes de guardar.
+    if query_image.mode != 'RGB':
+        query_image = query_image.convert('RGB')
+        
     query_image.save(os.path.join(query_dir, f"consulta_{query_name}.jpg"))
     
     # --- LOGGING (Fix de codificación y contenido) ---
