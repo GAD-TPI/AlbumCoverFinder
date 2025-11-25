@@ -144,7 +144,7 @@ try:
     args, _ = parser.parse_known_args()
 
     print(f"Lanzando procesamiento batch (radio_euc={args.radio_euc}, radio_cos={args.radio_cos}, engine={args.engine})...")
-    resultado_dirs = ejecutar_consultas_batch(carpeta_consulta=os.path.join(app.DATA_DIR, 'consulta'),
+    resultado_dirs = ejecutar_consultas(carpeta_consulta=os.path.join(app.DATA_DIR, 'consulta'),
                                               subfolder_root=args.subfolder_root,
                                               engine=args.engine,
                                               top_k=args.top_k,
