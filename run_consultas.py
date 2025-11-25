@@ -77,22 +77,47 @@ try:
                 if features_query is None:
                     continue
 
-                # Selección de motor
-                if engine is not None and str(engine).lower().startswith('f') and hasattr(app, 'index_euc_faiss') and app.index_euc_faiss is not None:
-                    resultados = app.buscar_vecinos_faiss(
-                        app.features_dataset,
-                        features_query,
-                        app.nombres_dataset,
-                        radio_euc,
-                        radio_cos,
-                        top_k=top_k,
-                        index_euc=app.index_euc_faiss,
-                        index_cos=app.index_cos_faiss
-                    )
-                    engine_text = "Faiss (Indexado)"
-                    engine_suffix = 'indexado'
-                else:
-                    resultados = app.buscar_vecinos_brute_force(
+                # Ejecutar ambos motores: Faiss (si está disponible) y Fuerza Bruta
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                clean_query_name = os.path.splitext(query_name)[0]
+
+                # 1) Faiss (Indexado) - si está disponible
+                if hasattr(app, 'index_euc_faiss') and app.index_euc_faiss is not None:
+                    try:
+                        start_f = app.time.perf_counter()
+                        resultados_f = app.buscar_vecinos_faiss(
+                            app.features_dataset,
+                            features_query,
+                            app.nombres_dataset,
+                            radio_euc,
+                            radio_cos,
+                            top_k=top_k,
+                            index_euc=app.index_euc_faiss,
+                            index_cos=app.index_cos_faiss
+                        )
+                        end_f = app.time.perf_counter()
+                        elapsed_f = end_f - start_f
+
+                        log_data_f = {
+                            'Tiempo_Ejecucion_s': elapsed_f,
+                            'Motor_Busqueda': 'Faiss (Indexado)',
+                            'Radio_Euclidiana': radio_euc,
+                            'Radio_Coseno': radio_cos,
+                            'Total_Euc': len(resultados_f.get('euc', [])),
+                            'Total_Cos': len(resultados_f.get('cos', []))
+                        }
+
+                        subfolder_name_f = os.path.join(subfolder_root, f"consulta_{clean_query_name}_indexado_{timestamp}")
+                        saved_dir_f = app.guardar_consulta_y_resultados(query_image, query_name, resultados_f, subfolder_name_f, 'Faiss (Indexado)', log_data_f)
+                        saved_dirs.append(saved_dir_f)
+                        print(f"Guardada consulta Faiss: {query_name} -> {saved_dir_f}")
+                    except Exception as e:
+                        print(f"Error Faiss procesando {img_path}: {e}")
+
+                # 2) Fuerza Bruta
+                try:
+                    start_b = app.time.perf_counter()
+                    resultados_b = app.buscar_vecinos_brute_force(
                         app.features_dataset,
                         features_query,
                         app.nombres_dataset,
@@ -100,31 +125,26 @@ try:
                         radio_cos,
                         top_k=top_k
                     )
-                    engine_text = "Fuerza Bruta"
-                    engine_suffix = 'fuerzabruta'
+                    end_b = app.time.perf_counter()
+                    elapsed_b = end_b - start_b
 
-                end_t = app.time.perf_counter()
-                elapsed = end_t - start_t
+                    log_data_b = {
+                        'Tiempo_Ejecucion_s': elapsed_b,
+                        'Motor_Busqueda': 'Fuerza Bruta',
+                        'Radio_Euclidiana': radio_euc,
+                        'Radio_Coseno': radio_cos,
+                        'Total_Euc': len(resultados_b.get('euc', [])),
+                        'Total_Cos': len(resultados_b.get('cos', []))
+                    }
 
-                log_data = {
-                    'Tiempo_Ejecucion_s': elapsed,
-                    'Motor_Busqueda': engine_text,
-                    'Radio_Euclidiana': radio_euc,
-                    'Radio_Coseno': radio_cos,
-                    'Total_Euc': len(resultados.get('euc', [])),
-                    'Total_Cos': len(resultados.get('cos', []))
-                }
+                    subfolder_name_b = os.path.join(subfolder_root, f"consulta_{clean_query_name}_fuerzabruta_{timestamp}")
+                    saved_dir_b = app.guardar_consulta_y_resultados(query_image, query_name, resultados_b, subfolder_name_b, 'Fuerza Bruta', log_data_b)
+                    saved_dirs.append(saved_dir_b)
+                    print(f"Guardada consulta Fuerza Bruta: {query_name} -> {saved_dir_b}")
+                except Exception as e:
+                    print(f"Error Fuerza Bruta procesando {img_path}: {e}")
 
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                clean_query_name = os.path.splitext(query_name)[0]
-
-                subfolder_name = os.path.join(subfolder_root, f"consulta_{clean_query_name}_{engine_suffix}_{timestamp}")
-
-                saved_dir = app.guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder_name, engine_text, log_data)
-                saved_dirs.append(saved_dir)
                 contador += 1
-
-                print(f"Guardada consulta: {query_name} -> {saved_dir}")
 
             except Exception as e:
                 print(f"Error procesando {img_path}: {e}")
@@ -137,7 +157,7 @@ try:
     parser.add_argument('--radio_euc', type=float, default=100.0, help='Radio Euclidiana (default: 100.0)')
     parser.add_argument('--radio_cos', type=float, default=0.45, help='Radio Coseno (default: 0.45)')
     parser.add_argument('--top_k', type=int, default=10, help='Número máximo de resultados por métrica (default: 10)')
-    parser.add_argument('--max_images', type=int, default=None, help='Máximo de imágenes a procesar (default: todas)')
+    parser.add_argument('--max_images', type=int, default=25, help='Máximo de imágenes a procesar (default: 25)')
     parser.add_argument('--engine', type=str, default='Faiss', help="Motor: 'Faiss' o 'Brute' (default: Faiss)")
     parser.add_argument('--subfolder_root', type=str, default='consulta_50k', help='Carpeta raíz dentro de results (default: consulta_50k)')
 
