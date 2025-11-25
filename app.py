@@ -95,7 +95,6 @@ def cargar_caracteristicas_dataset(_model): # carga características precalculad
         SAVE_INTERVAL = 15 # Guardar el progreso cada 25 lotes
         total_lotes = (len(rutas_a_procesar) + BATCH_SIZE - 1) // BATCH_SIZE
         
-        # 🚀 MODIFICACIÓN: Texto simplificado para el progreso del lote.
         progress_text_template = "Procesando Lote {current_batch}/{total_lotes} (Extrayendo Features...)"
         
         # NOTA: Usamos st.empty() para poner la barra sin el texto "Running..." de Streamlit.
@@ -136,7 +135,7 @@ def cargar_caracteristicas_dataset(_model): # carga características precalculad
             features_a_procesar.append(batch_features)
             nombres_cacheados.extend(valid_batch_names)
             
-            # 💾 GUARDADO INCREMENTAL
+            # GUARDADO INCREMENTAL
             if batch_num_actual % SAVE_INTERVAL == 0 or batch_num_actual == total_lotes:
                 
                 # Consolidar las nuevas features procesadas con las ya cargadas (si las hay)
@@ -291,7 +290,7 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
     query_dir = os.path.join(RESULTS_DIR, subfolder_name)
     os.makedirs(query_dir, exist_ok=True)
     
-    # 🌟 MODIFICACIÓN CLAVE AQUÍ: Convertir a RGB si no lo es, antes de guardar.
+    # Convertir a RGB si no lo es, antes de guardar.
     if query_image.mode != 'RGB':
         query_image = query_image.convert('RGB')
         
@@ -463,119 +462,6 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
     
     return query_dir
 
-
-def ejecutar_consultas_batch(carpeta_consulta=None, subfolder_root='consulta_50k', engine='Faiss',
-                            top_k=10, radio_euc=30.0, radio_cos=0.45, overwrite=False, max_images=None):
-    """
-    Ejecuta consultas para cada imagen encontrada en `carpeta_consulta` (recursivo)
-    y guarda los resultados dentro de `results/<subfolder_root>/...` usando
-    la función `guardar_consulta_y_resultados`.
-
-    Parámetros:
-    - carpeta_consulta: ruta a la carpeta que contiene las imágenes de consulta (por defecto `data/consulta`).
-    - subfolder_root: nombre de la carpeta raíz dentro de `results` donde se almacenarán las subcarpetas por consulta.
-    - engine: 'Faiss' o 'Brute' para elegir el motor de búsqueda.
-    - top_k, radio_euc, radio_cos: parámetros de búsqueda.
-    - overwrite: si True, sobrescribe resultados existentes (no implementado a nivel de archivo, reservado).
-    - max_images: número máximo de imágenes a procesar (None = todas).
-
-    Devuelve: lista con las rutas absolutas de los directorios creados para cada consulta.
-    """
-    if carpeta_consulta is None:
-        carpeta_consulta = os.path.join(DATA_DIR, 'consulta')
-
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    target_root = os.path.join(RESULTS_DIR, subfolder_root)
-    os.makedirs(target_root, exist_ok=True)
-
-    rutas_absolutas, _ = cargar_imagenes_dataset(carpeta_consulta)
-    saved_dirs = []
-
-    if not rutas_absolutas:
-        try:
-            st.info(f"No se encontraron imágenes en la carpeta de consultas: {carpeta_consulta}")
-        except Exception:
-            print(f"No se encontraron imágenes en la carpeta de consultas: {carpeta_consulta}")
-        return saved_dirs
-
-    contador = 0
-    for img_path in rutas_absolutas:
-        if max_images is not None and contador >= max_images:
-            break
-
-        try:
-            query_name = os.path.basename(img_path)
-            # Cargar imagen como PIL
-            query_image = Image.open(img_path)
-
-            # Extraer features (puede recibir ruta)
-            start_t = time.perf_counter()
-            features_query = _extract_features(img_path, feature_extractor)
-            if features_query is None:
-                continue
-
-            # Selección de motor
-            if engine is not None and str(engine).lower().startswith('f') and 'index_euc_faiss' in globals() and index_euc_faiss is not None:
-                resultados = buscar_vecinos_faiss(
-                    features_dataset,
-                    features_query,
-                    nombres_dataset,
-                    radio_euc,
-                    radio_cos,
-                    top_k=top_k,
-                    index_euc=index_euc_faiss,
-                    index_cos=index_cos_faiss
-                )
-                engine_text = "Faiss (Indexado)"
-                engine_suffix = 'indexado'
-            else:
-                resultados = buscar_vecinos_brute_force(
-                    features_dataset,
-                    features_query,
-                    nombres_dataset,
-                    radio_euc,
-                    radio_cos,
-                    top_k=top_k
-                )
-                engine_text = "Fuerza Bruta"
-                engine_suffix = 'fuerzabruta'
-
-            end_t = time.perf_counter()
-            elapsed = end_t - start_t
-
-            log_data = {
-                'Tiempo_Ejecucion_s': elapsed,
-                'Motor_Busqueda': engine_text,
-                'Radio_Euclidiana': radio_euc,
-                'Radio_Coseno': radio_cos,
-                'Total_Euc': len(resultados.get('euc', [])),
-                'Total_Cos': len(resultados.get('cos', []))
-            }
-
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            clean_query_name = os.path.splitext(query_name)[0]
-
-            # Construimos la subcarpeta dentro de results (guardar_consulta_y_resultados la unirá con RESULTS_DIR)
-            subfolder_name = os.path.join(subfolder_root, f"consulta_{clean_query_name}_{engine_suffix}_{timestamp}")
-
-            saved_dir = guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder_name, engine_text, log_data)
-            saved_dirs.append(saved_dir)
-            contador += 1
-
-            # Mensaje de progreso (streamlit si está disponible)
-            try:
-                st.info(f"Guardada consulta: {query_name} -> {saved_dir}")
-            except Exception:
-                print(f"Guardada consulta: {query_name} -> {saved_dir}")
-
-        except Exception as e:
-            try:
-                st.warning(f"Error procesando {img_path}: {e}")
-            except Exception:
-                print(f"Error procesando {img_path}: {e}")
-            continue
-
-    return saved_dirs
 
 # --- INTERFAZ PRINCIPAL ---
 
