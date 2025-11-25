@@ -95,7 +95,6 @@ def cargar_caracteristicas_dataset(_model): # carga características precalculad
         SAVE_INTERVAL = 15 # Guardar el progreso cada 25 lotes
         total_lotes = (len(rutas_a_procesar) + BATCH_SIZE - 1) // BATCH_SIZE
         
-        # 🚀 MODIFICACIÓN: Texto simplificado para el progreso del lote.
         progress_text_template = "Procesando Lote {current_batch}/{total_lotes} (Extrayendo Features...)"
         
         # NOTA: Usamos st.empty() para poner la barra sin el texto "Running..." de Streamlit.
@@ -136,7 +135,7 @@ def cargar_caracteristicas_dataset(_model): # carga características precalculad
             features_a_procesar.append(batch_features)
             nombres_cacheados.extend(valid_batch_names)
             
-            # 💾 GUARDADO INCREMENTAL
+            # GUARDADO INCREMENTAL
             if batch_num_actual % SAVE_INTERVAL == 0 or batch_num_actual == total_lotes:
                 
                 # Consolidar las nuevas features procesadas con las ya cargadas (si las hay)
@@ -155,7 +154,7 @@ def cargar_caracteristicas_dataset(_model): # carga características precalculad
 
     return features_dataset, nombres_cacheados
 
-@st.cache_data
+@st.cache_resource
 def cargar_indice_faiss(features_dataset):
     """
     Crea y entrena el índice Faiss para la búsqueda de vecinos más cercanos.
@@ -291,7 +290,7 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
     query_dir = os.path.join(RESULTS_DIR, subfolder_name)
     os.makedirs(query_dir, exist_ok=True)
     
-    # 🌟 MODIFICACIÓN CLAVE AQUÍ: Convertir a RGB si no lo es, antes de guardar.
+    # Convertir a RGB si no lo es, antes de guardar.
     if query_image.mode != 'RGB':
         query_image = query_image.convert('RGB')
         
@@ -352,58 +351,75 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
     
     # --- Mejora de Imágenes Generadas (Punto 3) ---
     def generar_imagen_consolidada(metric_key, metric_results, metric_name):
-        if not metric_results: return
-        
+        # Siempre generamos una imagen, incluso si no hay resultados, para que ambos
+        # (Euclidiana y Coseno) queden presentes en el directorio de la consulta.
         IMG_SIZE = 150
-        IMG_SPACING = 10 
-        INFO_HEIGHT = 45 
-        TITLE_HEIGHT = 80 
-        
+        IMG_SPACING = 10
+        INFO_HEIGHT = 52
+        TITLE_HEIGHT = 90
+
         rows = 3
         cols = 4
-        
-        ancho_final = 4 * IMG_SIZE + (cols + 1) * IMG_SPACING
+
+        ancho_final = cols * IMG_SIZE + (cols + 1) * IMG_SPACING
         alto_final = TITLE_HEIGHT + rows * IMG_SIZE + rows * INFO_HEIGHT + (rows + 1) * IMG_SPACING
-        
+
         img_compuesta = Image.new('RGB', (ancho_final, alto_final), color='white')
         draw = ImageDraw.Draw(img_compuesta)
-        
+
         try:
-            # Fuentes de archivo de sistema (deberían estar disponibles)
             font_title = ImageFont.truetype("arial.ttf", 20)
-            font_subtitle = ImageFont.truetype("arial.ttf", 18)
-            font_info = ImageFont.truetype("arial.ttf", 15)
+            font_subtitle = ImageFont.truetype("arial.ttf", 16)
+            font_info = ImageFont.truetype("arial.ttf", 14)
         except IOError:
-            # Fallback a fuentes por defecto si las de sistema no se encuentran
             font_title = ImageFont.load_default()
             font_subtitle = ImageFont.load_default()
             font_info = ImageFont.load_default()
-            
-        # Título principal y subtítulo (motor)
+
         main_title = f"10 imágenes más similares a {query_name}"
         sub_title = f"(Motor: {engine_text} | Distancia: {metric_name})"
-        
-        text_w_main, _ = draw.textbbox((0, 0), main_title, font=font_title)[2:]
-        text_w_sub, _ = draw.textbbox((0, 0), sub_title, font=font_subtitle)[2:]
-        
-        draw.text(((ancho_final - text_w_main) / 2, IMG_SPACING), main_title, fill='black', font=font_title)
-        draw.text(((ancho_final - text_w_sub) / 2, IMG_SPACING + 25), sub_title, fill='gray', font=font_subtitle)
 
-        # Línea de separación
-        draw.line([(0, TITLE_HEIGHT - IMG_SPACING/2), (ancho_final, TITLE_HEIGHT - IMG_SPACING/2)], fill='gray', width=1)
+        # Dibujar títulos centrados
+        w_main, h_main = draw.textbbox((0, 0), main_title, font=font_title)[2:]
+        w_sub, h_sub = draw.textbbox((0, 0), sub_title, font=font_subtitle)[2:]
+        draw.text(((ancho_final - w_main) / 2, IMG_SPACING), main_title, fill='black', font=font_title)
+        draw.text(((ancho_final - w_sub) / 2, IMG_SPACING + h_main + 4), sub_title, fill='gray', font=font_subtitle)
 
+        # Línea separadora
         y_offset = TITLE_HEIGHT
-        
-        # Dibuja la Consulta (Posición 0,0)
-        q_img_resized = query_image.resize((IMG_SIZE, IMG_SIZE))
-        img_compuesta.paste(q_img_resized, (IMG_SPACING, y_offset + IMG_SPACING))
-        draw.text((IMG_SPACING, y_offset + IMG_SIZE + IMG_SPACING), f"CONSULTA:", fill='black', font=font_info)
-        draw.text((IMG_SPACING, y_offset + IMG_SIZE + 18 + IMG_SPACING), f"{query_name}", fill='black', font=font_info)
-        
+        draw.line([(0, y_offset - IMG_SPACING), (ancho_final, y_offset - IMG_SPACING)], fill='gray', width=1)
+
+        # Dibuja la consulta en la primera celda (col 0, row 0)
+        try:
+            q_img_resized = query_image.resize((IMG_SIZE, IMG_SIZE))
+        except Exception:
+            q_img_resized = Image.new('RGB', (IMG_SIZE, IMG_SIZE), color='gray')
+
+        x_q = IMG_SPACING
+        y_q = y_offset + IMG_SPACING
+        img_compuesta.paste(q_img_resized, (x_q, y_q))
+
+        # Fondo blanco para el texto de la consulta (evita sobreescritura)
+        caption_bg_y = y_q + IMG_SIZE
+        draw.rectangle([x_q, caption_bg_y, x_q + IMG_SIZE, caption_bg_y + INFO_HEIGHT - 6], fill='white')
+        draw.text((x_q + 4, caption_bg_y + 4), "CONSULTA:", fill='black', font=font_info)
+        # Nombre de consulta truncado
+        max_name_len = 36
+        display_name = (query_name[:max_name_len] + '...') if len(query_name) > max_name_len else query_name
+        draw.text((x_q + 4, caption_bg_y + 20), display_name, fill='black', font=font_info)
+
+        # Si no hay resultados, genera una imagen con aviso y guarda
+        if not metric_results:
+            notice = "No se encontraron resultados en este radio."
+            w_notice, h_notice = draw.textbbox((0, 0), notice, font=font_info)[2:]
+            draw.text(((ancho_final - w_notice) / 2, caption_bg_y + INFO_HEIGHT + 8), notice, fill='black', font=font_info)
+            img_compuesta.save(os.path.join(query_dir, f"imagen_consolidada_{metric_key}.jpg"))
+            return
+
         for i, res in enumerate(metric_results):
             puesto = i + 1
-            
-            # Cálculo de la posición en la cuadrícula
+
+            # Cálculo de la posición en la cuadrícula: dejamos la columna 0 para la consulta
             if i < 3:
                 row_idx = 0
                 col_idx = i + 1
@@ -413,31 +429,39 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
             else:
                 row_idx = 2
                 col_idx = i - 7
-            
+
             x_start = col_idx * IMG_SIZE + (col_idx + 1) * IMG_SPACING
             y_start = y_offset + row_idx * (IMG_SIZE + INFO_HEIGHT) + IMG_SPACING
-            
+
+            # Cargar imagen de resultado con manejo de errores
             try:
                 res_img_path = os.path.join(DATASET_PATH, res['nombre'])
-                res_img = Image.open(res_img_path).resize((IMG_SIZE, IMG_SIZE))
+                res_img = Image.open(res_img_path).convert('RGB').resize((IMG_SIZE, IMG_SIZE))
                 img_compuesta.paste(res_img, (x_start, y_start))
-                
-                text_line_1 = f"#{puesto} (Dist: {res['dist']:.2f})"
-                
-                # Usar dos líneas de texto para evitar overflow del nombre de archivo.
-                draw.text((x_start, y_start + IMG_SIZE), text_line_1, fill='black', font=font_info)
-                draw.text((x_start, y_start + IMG_SIZE + 18), f"Archivo: {res['nombre']}", fill='black', font=font_info)
-                
-            except FileNotFoundError:
-                draw.rectangle([x_start, y_start, x_start + IMG_SIZE, y_start + IMG_SIZE], fill="gray")
-                draw.text((x_start, y_start + IMG_SIZE), f"NO ENCONTRADO", fill='black', font=font_info)
-        
+            except Exception:
+                draw.rectangle([x_start, y_start, x_start + IMG_SIZE, y_start + IMG_SIZE], fill="lightgray")
+
+            # Área de texto con fondo blanco para evitar overlay sobre la imagen
+            text_bg_y = y_start + IMG_SIZE
+            draw.rectangle([x_start, text_bg_y, x_start + IMG_SIZE, text_bg_y + INFO_HEIGHT - 6], fill='white')
+
+            text_line_1 = f"#{puesto} (Dist: {res.get('dist', 0):.2f})"
+            # Truncar nombre largo
+            nombre_archivo = res.get('nombre', 'N/A')
+            max_fname = 36
+            nombre_display = (nombre_archivo[:max_fname] + '...') if len(nombre_archivo) > max_fname else nombre_archivo
+
+            draw.text((x_start + 4, text_bg_y + 4), text_line_1, fill='black', font=font_info)
+            draw.text((x_start + 4, text_bg_y + 20), f"Archivo: {nombre_display}", fill='black', font=font_info)
+
+        # Guardar la imagen consolidada para este metric
         img_compuesta.save(os.path.join(query_dir, f"imagen_consolidada_{metric_key}.jpg"))
         
     generar_imagen_consolidada('euclidiana', resultados['euc'], 'Euclidiana')
     generar_imagen_consolidada('coseno', resultados['cos'], 'Coseno')
     
     return query_dir
+
 
 # --- INTERFAZ PRINCIPAL ---
 
