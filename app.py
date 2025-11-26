@@ -133,7 +133,7 @@ def cargar_caracteristicas_dataset(_model):
     # --- Procesamiento por Lotes ---
     if rutas_a_procesar:
         BATCH_SIZE = 32 
-        SAVE_INTERVAL = 15 # Intervalo para guardar progreso en disco
+        SAVE_INTERVAL = 15 # intervalo para guardar progreso en disco
         total_lotes = (len(rutas_a_procesar) + BATCH_SIZE - 1) // BATCH_SIZE
         
         progress_text_template = "Procesando Lote {current_batch}/{total_lotes}"
@@ -160,7 +160,7 @@ def cargar_caracteristicas_dataset(_model):
                     batch_images_arrays.append(img_array)
                     valid_batch_names.append(batch_names[j]) 
                 except Exception:
-                    continue # Saltar imágenes corruptas
+                    continue # saltar imágenes corruptas
             
             if not batch_images_arrays: continue
             
@@ -445,9 +445,10 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
 # ==========================================
 
 # Estilos CSS Personalizados
+# Se eliminó 'border-bottom' del h1 para quitar la línea horizontal
 STYLING_CSS = """
 <style>
-h1 { text-align: center; font-family: 'Serif'; color: #333; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+h1 { text-align: center; font-family: 'Serif'; color: #333; padding-bottom: 10px; }
 div.stButton > button { display: block; margin: 0 auto; width: 100%; max-width: 250px; background-color: #4CAF50; border-radius: 8px; }
 h2 { color: #555; border-left: 5px solid #007bff; padding-left: 10px; margin-top: 10px; }
 </style>
@@ -474,7 +475,7 @@ if features_dataset is None or not nombres_dataset:
     st.error("Error crítico: No se pudo cargar la base de datos.")
 else:
     st.success(f"Sistema listo. {len(nombres_dataset)} imágenes indexadas.")
-    st.markdown("---")
+    st.markdown("<br>", unsafe_allow_html=True) 
     
     # Variables de estado
     query_features = None
@@ -487,7 +488,7 @@ else:
         ("Fuerza Bruta (ResNet)", "Faiss (Indexado)"),
         key="search_engine_select"
     )
-    st.markdown("---")
+    st.markdown("<br>", unsafe_allow_html=True) 
     
     # Carga de Archivo de Consulta
     uploaded_file = st.file_uploader("Sube una imagen de consulta:", type=["jpg", "jpeg", "png"])
@@ -568,7 +569,7 @@ else:
         
         query_dir = guardar_consulta_y_resultados(query_image, query_name, resultado, subfolder_name, used_engine, log_data) 
         
-        st.markdown("---")
+        st.markdown("<br>", unsafe_allow_html=True) 
         st.success(f"Resultados guardados en: **{query_dir}**")
         st.info(f"Tiempo: **{elapsed_time:.4f} s** | Motor: {used_engine}")
         st.subheader('Resultados de la Búsqueda')
@@ -589,5 +590,5 @@ else:
                             st.warning(f"Archivo no encontrado: {res['nombre']}")
 
         render_results_section("Euclidiana", resultado['euc'], radio_euc)
-        st.markdown("---") 
+        st.markdown("<br>", unsafe_allow_html=True) 
         render_results_section("Coseno", resultado['cos'], radio_cos)
