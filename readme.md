@@ -60,7 +60,7 @@ streamlit run app.py
 Para que el sistema funcione, se deben cargar las imágenes sobre las cuales se realizará la búsqueda.
 
 ### Ubicación
-El dataset debe ser una subcarpeta de /data. 
+El dataset debe ser una subcarpeta de la carpeta /data (creada en la raíz del proyecto). 
 Se puede cambiar el nombre de la base de datos editando la variable DATASET_NAME en el archivo app.py. Por defecto es "dataset_80k".
 
 ### Formatos Soportados
