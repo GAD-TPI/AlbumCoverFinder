@@ -1,12 +1,9 @@
 [theme]
-# El tema base a usar (light o dark)
 base = "light"
 
 # Color primario para los widgets interactivos (botones, sliders, etc.)
-# (Este azul es un ejemplo, podés usar cualquier código hexadecimal)
 primaryColor = "#1E88E5"
 
 # Color de fondo para los widgets
-# (Dejarlos en blanco usa los defaults del tema 'light')
 # backgroundColor = ""
 # secondaryBackgroundColor = ""

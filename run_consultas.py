@@ -40,14 +40,12 @@ try:
     else:
         print('Índices Faiss ya presentes')
         
-    # --- Implementación de ejecutar_consultas_batch MOVIDA a este script ---
     def ejecutar_consultas(carpeta_consulta=None, subfolder_root='consulta_50k', engine='Faiss',
                                 top_k=10, radio_euc=100.0, radio_cos=0.45, overwrite=False, max_images=None):
         """
         Ejecuta consultas para cada imagen encontrada en `carpeta_consulta` (recursivo)
         y guarda los resultados dentro de `results/<subfolder_root>/...` usando
         la función `guardar_consulta_y_resultados` definida en `app`.
-        Esta versión referencia objetos y funciones en el módulo `app`.
         """
         if carpeta_consulta is None:
             carpeta_consulta = os.path.join(app.DATA_DIR, 'consulta')
@@ -77,11 +75,11 @@ try:
                 if features_query is None:
                     continue
 
-                # Ejecutar ambos motores: Faiss (si está disponible) y Fuerza Bruta
+                # Ejecutar ambos motores: Faiss y Fuerza Bruta
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 clean_query_name = os.path.splitext(query_name)[0]
 
-                # 1) Faiss (Indexado) - si está disponible
+                # 1) Faiss (Indexado) 
                 if hasattr(app, 'index_euc_faiss') and app.index_euc_faiss is not None:
                     try:
                         start_f = app.time.perf_counter()
