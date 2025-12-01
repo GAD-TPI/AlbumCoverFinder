@@ -17,31 +17,25 @@ import logging
 import datetime
 import time
 import glob
-
-# --- Importaciones de Ciencia de Datos y ML ---
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 from sklearn.metrics.pairwise import cosine_distances, euclidean_distances
-
-# --- Configuración de TensorFlow/Keras ---
-# Variables de entorno para evitar logging molesto
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-logging.getLogger('tensorflow').setLevel(logging.ERROR)
-
 import tensorflow as keras
 from keras._tf_keras.keras.preprocessing import image
 from keras.applications.resnet50 import ResNet50, preprocess_input
 from keras.models import Model
-
-# --- Importaciones de la Aplicación ---
-import streamlit as st # para aplicación web
-import faiss  # índice para búsquedas eficientes
+import streamlit as st
+import faiss  
 
 # ==========================================
 #       CONFIGURACIÓN Y CONSTANTES
 # ==========================================
+
+# Configuración de TensorFlow/Keras para minimizar logs y warnings
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
 
 # Rutas base del proyecto
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -53,7 +47,7 @@ RESULTS_DIR = os.path.join(BASE_DIR, 'results')
 DATASET_NAME = 'dataset_80k' 
 DATASET_PATH = os.path.join(DATA_DIR, DATASET_NAME)
 
-# Archivos de caché para persistencia de vectores de características
+# Archivos de caché para vectores de características
 FEATURES_FILE = os.path.join(FEATURES_DIR, f'{DATASET_NAME}_features.npy')
 NAMES_FILE = os.path.join(FEATURES_DIR, f'{DATASET_NAME}_names.npy')
 
@@ -64,8 +58,8 @@ NAMES_FILE = os.path.join(FEATURES_DIR, f'{DATASET_NAME}_names.npy')
 @st.cache_resource
 def cargar_modelo():
     """
-    Carga el modelo ResNet50 pre-entrenado en ImageNet sin la capa superior (top).
-    Añade GlobalAveragePooling para obtener un vector de características de 2048 dimensiones.
+    Carga el modelo ResNet50 sin la capa superior (top), GlobalAveragePooling para 
+    obtener un vector de características de 2048 dimensiones.
     Usa @st.cache_resource para cargar el modelo en memoria una única vez.
     """
     base_model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
@@ -104,13 +98,12 @@ def cargar_caracteristicas_dataset(_model):
     features_dataset = np.empty((0, 2048))
     nombres_cacheados = []
     
-    # --- Carga de Caché Existente ---
+    # Carga de Caché Existente
     if os.path.exists(FEATURES_FILE) and os.path.exists(NAMES_FILE):
         try:
             features_dataset = np.load(FEATURES_FILE)
             nombres_cacheados = np.load(NAMES_FILE, allow_pickle=True).tolist()
             
-            # Verificación simple de integridad
             if len(nombres_cacheados) == len(rutas_dataset) and len(features_dataset) == len(rutas_dataset):
                 st.info(f"Cargando {len(features_dataset)} características desde caché.")
                 return features_dataset, nombres_cacheados
@@ -119,7 +112,7 @@ def cargar_caracteristicas_dataset(_model):
             features_dataset = np.empty((0, 2048))
             nombres_cacheados = []
             
-    # --- Identificación de Imágenes Nuevas ---
+    # Identificación de Imágenes Nuevas
     nombres_set = set(nombres_cacheados)
     rutas_a_procesar = [] 
     nombres_a_procesar = [] 
@@ -130,10 +123,10 @@ def cargar_caracteristicas_dataset(_model):
             rutas_a_procesar.append(img_path)
             nombres_a_procesar.append(img_name)
 
-    # --- Procesamiento por Lotes ---
+    # Procesamiento por Lotes
     if rutas_a_procesar:
         BATCH_SIZE = 32 
-        SAVE_INTERVAL = 15 # intervalo para guardar progreso en disco
+        SAVE_INTERVAL = 15
         total_lotes = (len(rutas_a_procesar) + BATCH_SIZE - 1) // BATCH_SIZE
         
         progress_text_template = "Procesando Lote {current_batch}/{total_lotes}"
@@ -164,7 +157,7 @@ def cargar_caracteristicas_dataset(_model):
             
             if not batch_images_arrays: continue
             
-            # Preprocesamiento y Predicción
+            # Preprocesamiento y Extracción de Características
             batch_array = np.array(batch_images_arrays)
             batch_preprocessed = preprocess_input(batch_array)
             batch_features = _model.predict(batch_preprocessed, verbose=0)
@@ -172,7 +165,7 @@ def cargar_caracteristicas_dataset(_model):
             features_a_procesar.append(batch_features)
             nombres_cacheados.extend(valid_batch_names)
             
-            # --- Guardado Incremental ---
+            # Guardado Incremental
             if batch_num_actual % SAVE_INTERVAL == 0 or batch_num_actual == total_lotes:
                 features_consolidadas = np.vstack([features_dataset] + features_a_procesar)
                 
@@ -271,17 +264,16 @@ def buscar_vecinos_brute_force(features_dataset, features_query, nombres_dataset
 def buscar_vecinos_faiss(features_dataset, features_query, nombres_dataset, 
                           radio_euc, radio_cos, top_k=10, index_euc=None, index_cos=None):
     """
-    Realiza la búsqueda utilizando índices optimizados FAISS.
+    Realiza la búsqueda utilizando índices FAISS.
     """
     if index_euc is None or index_cos is None:
         st.error("Error: Índices Faiss no cargados.")
         return {'euc': [], 'cos': []}
         
     query_vector = features_query.astype('float32').reshape(1, -1)
-    K_MAX = len(nombres_dataset) # Buscamos en todos para poder filtrar por radio luego
 
-    # --- Búsqueda Euclidiana ---
-    D_euc, I_euc = index_euc.search(query_vector, K_MAX)
+    # Búsqueda Euclidiana
+    D_euc, I_euc = index_euc.search(query_vector, len(nombres_dataset))
     
     resultados_euc = []
     for dist_squared, idx in zip(D_euc[0], I_euc[0]):
@@ -290,13 +282,13 @@ def buscar_vecinos_faiss(features_dataset, features_query, nombres_dataset,
         resultados_euc.append({'nombre': nombres_dataset[idx], 'dist': dist})
         if len(resultados_euc) >= top_k: break
 
-    # --- Búsqueda Coseno ---
-    faiss.normalize_L2(query_vector) # Normalizar consulta
-    D_cos, I_cos = index_cos.search(query_vector, K_MAX)
+    # Búsqueda Coseno
+    faiss.normalize_L2(query_vector) # normalizar consulta
+    D_cos, I_cos = index_cos.search(query_vector, len(nombres_dataset))
     
     resultados_cos = []
     for sim, idx in zip(D_cos[0], I_cos[0]):
-        dist = max(0, 1 - sim) # Convertir Similitud a Distancia
+        dist = max(0, 1 - sim) # convertir similitud a distancia
         if dist > radio_cos: break
         resultados_cos.append({'nombre': nombres_dataset[idx], 'dist': dist})
         if len(resultados_cos) >= top_k: break
@@ -318,12 +310,12 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
     query_dir = os.path.join(RESULTS_DIR, subfolder_name)
     os.makedirs(query_dir, exist_ok=True)
     
+    # Imagen de consulta
     if query_image.mode != 'RGB':
         query_image = query_image.convert('RGB')
-        
     query_image.save(os.path.join(query_dir, f"consulta_{query_name}.jpg"))
     
-    # LOG DE METADATOS
+    # Log de metadatos
     log_file = os.path.join(query_dir, "metadata_log.txt")
     with open(log_file, 'w', encoding='utf-8') as f: 
         f.write(f"--- LOG DE CONSULTA ---\n")
@@ -335,7 +327,7 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
         f.write(f"Configuración Radio Euc: {log_data['Radio_Euclidiana']} | Hallados: {log_data['Total_Euc']}\n")
         f.write(f"Configuración Radio Cos: {log_data['Radio_Coseno']} | Hallados: {log_data['Total_Cos']}\n")
         
-    # CSV DE RESULTADOS
+    # CSV de resultados
     max_len = max(len(resultados['euc']), len(resultados['cos']))
     data = []
     for i in range(max_len):
@@ -361,20 +353,20 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
             row['Nombre_Archivo_Cos'] = 'N/A'
             row['Distancia_Cos'] = 'N/A'
         
-        # Coincidencia Unánime
+        # Coincidencia de resultados
         row['Unanime'] = 1 if (nombre_euc != 'N/A' and nombre_euc == nombre_cos) else 0
         data.append(row)
         
     df = pd.DataFrame(data)
     df.to_csv(os.path.join(query_dir, f"resultados_unificados.csv"), index=False)
     
-    # GENERACIÓN DE IMAGEN CONSOLIDADA (MOSAICO)
+    # Generación de mosaico de imágenes
     def generar_imagen_consolidada(metric_key, metric_results, metric_name):
         IMG_SIZE = 150
         IMG_SPACING = 10
         INFO_HEIGHT = 52
         TITLE_HEIGHT = 90
-        rows, cols = 3, 4 # Grid 4x3
+        rows, cols = 3, 4 # grid 4x3
 
         ancho_final = cols * IMG_SIZE + (cols + 1) * IMG_SPACING
         alto_final = TITLE_HEIGHT + rows * IMG_SIZE + rows * INFO_HEIGHT + (rows + 1) * IMG_SPACING
@@ -445,7 +437,6 @@ def guardar_consulta_y_resultados(query_image, query_name, resultados, subfolder
 # ==========================================
 
 # Estilos CSS Personalizados
-# Se eliminó 'border-bottom' del h1 para quitar la línea horizontal
 STYLING_CSS = """
 <style>
 h1 { text-align: center; font-family: 'Serif'; color: #333; padding-bottom: 10px; }
@@ -511,7 +502,6 @@ else:
             st.stop()
 
         if query_features is not None:
-            # Layout: Imagen a la izquierda, Controles a la derecha
             col_img, col_controls = st.columns([1, 1.5])
             
             with col_img:
